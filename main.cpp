@@ -254,6 +254,26 @@ void test_assetGraph()
 
     manager.printDependencies();
 }
+
+void touchFile(const std::filesystem::path &path)
+{
+    std::ofstream file(path, std::ios::binary | std::ios::app);
+    file.put('\0');
+}
+
+void test_assetIncrementalBuild()
+{
+    AssetManager manager;
+
+    MaterialHandle mat = manager.importMaterial("wood.jpg", "cube.glsl");
+
+    manager.printDependencies();
+
+    touchFile("wood.jpg");
+    manager.checkForChanges();
+
+    manager.checkForChanges();
+}
 int main()
 {
     // test_basicCorrectness();
@@ -263,7 +283,8 @@ int main()
 
     // test_asciiVisualization();
 
-    test_assetHandles();
-    test_assetImport();
-    test_assetGraph();
+    // test_assetHandles();
+    // test_assetImport();
+    // test_assetGraph();
+    test_assetIncrementalBuild();
 }

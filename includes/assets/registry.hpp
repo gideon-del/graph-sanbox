@@ -2,6 +2,7 @@
 #include "asset-handle.hpp"
 #include "./importers/importers.hpp"
 #include "../graph.hpp"
+#include <picosha2.h>
 
 enum class AssetType
 {
@@ -77,18 +78,17 @@ public:
     }
 };
 
-struct AssetManager
+class AssetManager
 {
-    AssetRegistry<Texture> textures;
+public:
+    std::string computeSha256Hash(const std::filesystem::path &path)
+    {
 
-    AssetRegistry<Shader> shaders;
+        std::ifstream file(path, std::ios::binary);
 
-    AssetRegistry<Mesh> meshes;
-
-    AssetRegistry<Material> materials;
-
-    std::unordered_map<AssetID, AssetMetadata> _metadata;
-    Graph _depGraph;
+        std::vector<char> bytes(std::istreambuf_iterator<char>(file), {});
+        return picosha2::hash256_hex_string(bytes);
+    }
     TextureHandle importTexture(
         const std::filesystem::path &path)
     {
@@ -109,9 +109,10 @@ struct AssetManager
         metadata.lastModified = std::filesystem::last_write_time(path);
         metadata.assetType = AssetType::Texture;
         metadata.name = path.filename().string();
+        metadata.contentHash = computeSha256Hash(path);
 
         _metadata[handle.id] = metadata;
-        _depGraph.addNode(handle.id);
+        _depGraph.addNode(handle.id, metadata.name);
         return handle;
     }
 
@@ -132,8 +133,10 @@ struct AssetManager
         metadata.lastModified = std::filesystem::last_write_time(path);
         metadata.assetType = AssetType::Mesh;
         metadata.name = path.filename().string();
+        metadata.contentHash = computeSha256Hash(path);
+
         _metadata[handle.id] = metadata;
-        _depGraph.addNode(handle.id);
+        _depGraph.addNode(handle.id, metadata.name);
 
         return handle;
     }
@@ -157,8 +160,10 @@ struct AssetManager
         metadata.assetType = AssetType::Shader;
         metadata.name = path.filename().string();
 
+        metadata.contentHash = computeSha256Hash(path);
+
         _metadata[handle.id] = metadata;
-        _depGraph.addNode(handle.id);
+        _depGraph.addNode(handle.id, metadata.name);
 
         return handle;
     }
@@ -176,7 +181,7 @@ struct AssetManager
             .texture = texture,
             .shader = shader});
 
-        _depGraph.addNode(materialHandle.id);
+        _depGraph.addNode(materialHandle.id, "Material " + std::to_string(materialHandle.id));
         try
         {
             addDependency(materialHandle.id, texture.id);
@@ -198,6 +203,103 @@ struct AssetManager
         return _metadata[id].name;
     }
 
+    void printDependencies()
+    {
+        _depGraph.printStats();
+        std::cout << "Load order: ";
+        _depGraph.printTopoOrder();
+    }
+
+    std::unordered_set<AssetID> invalidate(AssetID id)
+    {
+        assert(_depGraph.hasNode(id));
+        auto affectedAssets = _depGraph.bfs(id);
+        return std::unordered_set<AssetID>(affectedAssets.begin(), affectedAssets.end());
+    }
+
+    void checkForChanges()
+    {
+        for (auto &[id, meta] : _metadata)
+        {
+            if (meta.sourceFile.empty())
+                continue;
+
+            std::string currentHash = computeSha256Hash(meta.sourceFile);
+            if (currentHash != meta.contentHash)
+            {
+                std::cout << "Changed: " << meta.sourceFile << "\n";
+                meta.contentHash = currentHash;
+
+                auto affected = invalidate(id);
+                auto order = _depGraph.topoSort();
+                for (auto &aid : order)
+                {
+                    if (affected.count(aid))
+                        reload(aid);
+                }
+            }
+        }
+    }
+
+    void reload(AssetID id)
+    {
+        assert(_depGraph.hasNode(id));
+        if (!_metadata.count(id))
+            return;
+        auto &meta = _metadata.at(id);
+
+        if (meta.assetType == AssetType::Texture)
+            reloadTexture(id, meta);
+        if (meta.assetType == AssetType::Mesh)
+            reloadMesh(id, meta);
+        if (meta.assetType == AssetType::Shader)
+            reloadShader(id, meta);
+    }
+
+    AssetRegistry<Texture> textures;
+    AssetRegistry<Shader> shaders;
+    AssetRegistry<Mesh> meshes;
+    AssetRegistry<Material> materials;
+
+private:
+    std::unordered_map<AssetID, AssetMetadata> _metadata;
+    Graph _depGraph;
+    void reloadTexture(AssetID id, AssetMetadata &meta)
+    {
+        TextureHandle handle = AssetHandle<Texture>{id};
+        PNGImporter importer;
+        auto texture = importer.import(meta.sourceFile);
+        if (!texture)
+        {
+            std::cout << "Failed to reload texture at: " << meta.sourceFile << "\n";
+            return;
+        }
+        textures.replace(handle, std::move(*texture));
+    };
+    void reloadMesh(AssetID id, AssetMetadata &meta)
+    {
+        MeshHandle handle = AssetHandle<Mesh>{id};
+        OBJImporter importer;
+        auto mesh = importer.import(meta.sourceFile);
+        if (!mesh)
+        {
+            std::cout << "Failed to reload mesh at: " << meta.sourceFile << "\n";
+            return;
+        }
+        meshes.replace(handle, std::move(*mesh));
+    };
+    void reloadShader(AssetID id, AssetMetadata &meta)
+    {
+        ShaderHandle handle = AssetHandle<Shader>{id};
+        ShaderImporter importer;
+        auto shader = importer.import(meta.sourceFile);
+        if (!shader)
+        {
+            std::cout << "Failed to reload shader at: " << meta.sourceFile << "\n";
+            return;
+        }
+        shaders.replace(handle, std::move(*shader));
+    };
     void addDependency(AssetID from, AssetID to)
     {
         _depGraph.addEdge(to, from);
@@ -218,12 +320,5 @@ struct AssetManager
             }
             throw std::runtime_error("Circular asset dependency");
         }
-    }
-
-    void printDependencies()
-    {
-        _depGraph.printStats();
-        std::cout << "Load order: ";
-        _depGraph.printTopoOrder();
     }
 };

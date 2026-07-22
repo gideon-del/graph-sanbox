@@ -319,10 +319,10 @@ public:
         std::cout << "Edges: " << edgeCount() << "\n";
         std::cout << "Has Cycle: " << (hasCycles() ? "YES" : "No") << "\n";
 
-        auto visited = bfs(m_adjacentList.begin()->first);
+        // auto visited = bfs(m_adjacentList.begin()->first);
 
-        std::cout << "Connected: "
-                  << (visited.size() == nodeCount() ? "yes" : "NO") << "\n";
+        // std::cout << "Connected: "
+        //           << (visited.size() == nodeCount() ? "yes" : "NO") << "\n";
     }
     void printTree(NodeID root, int depth,
                    std::unordered_set<NodeID> &seen)
