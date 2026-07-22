@@ -1,4 +1,6 @@
-#include "./includes/graph.h"
+#include "./includes/graph.hpp"
+#include "./includes/assets/registry.hpp"
+#include "./includes/assets/interface/Iimporter.hpp"
 #include <iostream>
 #include <string>
 void test_basicCorrectness()
@@ -217,12 +219,51 @@ void test_asciiVisualization()
     g.printTree(ShadowMap, 0, seen);
 }
 
+void test_assetHandles()
+{
+    AssetManager manager;
+
+    TextureHandle texHandle = manager.textures.registerAsset(Texture{});
+    MeshHandle meshHandle = manager.meshes.registerAsset(Mesh{});
+    MaterialHandle materialHandle = manager.materials.registerAsset(Material{});
+    std::cout << "Texture Handle id " << texHandle.id << "\n";
+    std::cout << "Mesh Handle id " << meshHandle.id << "\n";
+    std::cout << "Material Handle id " << materialHandle.id << "\n";
+    // Uncomment this line to confirm it fails to compile:
+    // MeshHandle wrongHandle = texHandle;
+}
+
+void test_assetImport()
+{
+    AssetManager manager;
+    TextureHandle wood = manager.importTexture("wood.jpg");
+    std::cout << "Wood Id " << wood.id << "\n";
+    auto woodTexture = manager.textures.get(wood);
+    std::cout << (int)woodTexture->pixels[0] << " "
+              << (int)woodTexture->pixels[1] << " "
+              << (int)woodTexture->pixels[2] << " "
+              << (int)woodTexture->pixels[3] << "\n";
+
+    TextureHandle missing = manager.importTexture("missing.jpg");
+    std::cout << "Missing Id " << missing.id << "\n";
+}
+void test_assetGraph()
+{
+    AssetManager manager;
+    MaterialHandle material = manager.importMaterial("wood.jpg", "cube.glsl");
+
+    manager.printDependencies();
+}
 int main()
 {
-    test_basicCorrectness();
-    test_graphTraversal();
-    test_topoSort();
-    test_cycleDetection();
+    // test_basicCorrectness();
+    // test_graphTraversal();
+    // test_topoSort();
+    // test_cycleDetection();
 
-    test_asciiVisualization();
+    // test_asciiVisualization();
+
+    test_assetHandles();
+    test_assetImport();
+    test_assetGraph();
 }

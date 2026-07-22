@@ -58,6 +58,12 @@ public:
             neighbors.erase(std::remove(neighbors.begin(), neighbors.end(), id), neighbors.end());
         }
     }
+    void removeEdge(NodeID from, NodeID to)
+    {
+        assert(hasNode(from));
+        auto &neighbors = m_adjacentList.at(from);
+        neighbors.erase(std::remove(neighbors.begin(), neighbors.end(), to), neighbors.end());
+    }
 
     size_t nodeCount()
     {
