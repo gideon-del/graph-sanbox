@@ -1,4 +1,5 @@
 #include "./includes/graph.hpp"
+#include "./includes/resources/resource-graph.hpp"
 #include "./includes/assets/asset-manager.hpp"
 #include <iostream>
 #include <string>
@@ -290,6 +291,99 @@ void test_assetAsyncLoader()
 
     assert(!manager.textures.isPending(handle));
 }
+
+void test_resourceGraphModel()
+{
+    ResourceGraph graph;
+
+    ResourceID texture = 1;
+    ResourceID filteredTexture = 2;
+    ResourceID outputTexture = 3;
+
+    graph.declareResource(ResourceDesc{
+        texture,
+        "Texture",
+        20,
+        ResourceType::Texture,
+    });
+    graph.declareResource(ResourceDesc{
+        filteredTexture,
+        "Filtered Texture",
+        20,
+        ResourceType::Texture,
+    });
+    graph.declareResource(ResourceDesc{
+        outputTexture,
+        "Output Texture",
+        20,
+        ResourceType::Texture,
+    });
+
+    graph.addNode({"Apply Filter",
+                   {filteredTexture},
+                   {texture},
+                   [&]() {}});
+    graph.addNode({"Print Output",
+                   {},
+                   {filteredTexture},
+                   [&]() {}});
+    graph.addNode({"Read PNG",
+                   {texture},
+                   {},
+                   [&]() {}});
+
+    graph.compile();
+    std::vector<uint32_t> order = graph.executionOrder();
+
+    std::cout << "Execution order: ";
+    for (int i = 0; i < order.size(); i++)
+    {
+        std::cout << graph.getNode(order[i])->name + (i == (order.size() - 1) ? "\n" : "->");
+    }
+
+    graph.addNode({"Failed Pass",
+                   {},
+                   {outputTexture},
+                   [&]() {}});
+    graph.compile();
+}
+
+void test_resourceGraphFanInFanOut()
+{
+    ResourceGraph graph;
+
+    graph.declareResource({1, "Albedo", 4 * 1920 * 1080, ResourceType::Texture, true});
+    graph.declareResource({2, "Normal", 8 * 1920 * 1080, ResourceType::Texture, true});
+    graph.declareResource({3, "Depth", 4 * 1920 * 1080, ResourceType::DepthBuffer, true});
+    graph.declareResource({4, "ShadowMap", 4 * 2048 * 2048, ResourceType::DepthBuffer, true});
+    graph.declareResource({5, "LitColor", 8 * 1920 * 1080, ResourceType::Texture, true});
+    graph.declareResource({6, "PostProcessTemp", 8 * 1920 * 1080, ResourceType::Texture, true});
+    graph.declareResource({7, "SSAO", 8 * 1920 * 1080, ResourceType::Texture, true});
+
+    graph.addNode({.name = "GBufferPass",
+                   .produces = {1, 2, 3},
+                   .consumes = {}});
+    graph.addNode({.name = "LightingPass",
+                   .produces = {5},
+                   .consumes = {1, 2, 3, 4}});
+    graph.addNode({.name = "ShadowPass",
+                   .produces = {4},
+                   .consumes = {}});
+    graph.addNode({.name = "PostProcess",
+                   .produces = {6},
+                   .consumes = {5}});
+    graph.addNode({.name = "SSAO",
+                   .produces = {7},
+                   .consumes = {6, 3}});
+
+    graph.compile();
+
+    graph.printResourceFlow();
+    graph.printLifetimes();
+    // std::cout << "Peak memory: " << graph.peakMemoryBytes() << "\n";
+
+    graph.printAliasingReport();
+};
 int main()
 {
     // test_basicCorrectness();
@@ -303,5 +397,9 @@ int main()
     // test_assetImport();
     // test_assetGraph();
     // test_assetIncrementalBuild();
-    test_assetAsyncLoader();
+    // test_assetAsyncLoader();
+
+    // test_resourceGraphModel();
+
+    test_resourceGraphFanInFanOut();
 }

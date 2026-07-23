@@ -37,7 +37,7 @@ public:
 
     bool hasEdge(NodeID from, NodeID to)
     {
-        assert(hasNode(from));
+        assert(hasNode(from) && hasNode(to));
         const auto &neighbors = m_adjacentList.at(from);
         return std::find(neighbors.begin(), neighbors.end(), to) != neighbors.end();
     }
