@@ -1,6 +1,5 @@
 #include "./includes/graph.hpp"
-#include "./includes/assets/registry.hpp"
-#include "./includes/assets/interface/Iimporter.hpp"
+#include "./includes/assets/asset-manager.hpp"
 #include <iostream>
 #include <string>
 void test_basicCorrectness()
@@ -274,6 +273,23 @@ void test_assetIncrementalBuild()
 
     manager.checkForChanges();
 }
+
+void test_assetAsyncLoader()
+{
+    AssetManager manager;
+
+    TextureHandle handle = manager.requestTextureLoad("wood.jpg");
+
+    int maxAttempts = 100;
+    while (manager.textures.isPending(handle) && maxAttempts-- > 0)
+    {
+        manager.tick();
+        std::cout << "Loading asset Max Attempt " << maxAttempts << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    assert(!manager.textures.isPending(handle));
+}
 int main()
 {
     // test_basicCorrectness();
@@ -286,5 +302,6 @@ int main()
     // test_assetHandles();
     // test_assetImport();
     // test_assetGraph();
-    test_assetIncrementalBuild();
+    // test_assetIncrementalBuild();
+    test_assetAsyncLoader();
 }
