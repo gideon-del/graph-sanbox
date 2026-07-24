@@ -322,15 +322,15 @@ void test_resourceGraphModel()
     graph.addNode({"Apply Filter",
                    {filteredTexture},
                    {texture},
-                   [&]() {}});
+                   [&](ResourceContext &ctx) {}});
     graph.addNode({"Print Output",
                    {},
                    {filteredTexture},
-                   [&]() {}});
+                   [&](ResourceContext &ctx) {}});
     graph.addNode({"Read PNG",
                    {texture},
                    {},
-                   [&]() {}});
+                   [&](ResourceContext &ctx) {}});
 
     graph.compile();
     std::vector<uint32_t> order = graph.executionOrder();
@@ -344,7 +344,7 @@ void test_resourceGraphModel()
     graph.addNode({"Failed Pass",
                    {},
                    {outputTexture},
-                   [&]() {}});
+                   [&](ResourceContext &ctx) {}});
     graph.compile();
 }
 
@@ -362,27 +362,49 @@ void test_resourceGraphFanInFanOut()
 
     graph.addNode({.name = "GBufferPass",
                    .produces = {1, 2, 3},
-                   .consumes = {}});
+                   .consumes = {},
+                   .execute = [&](ResourceContext &ctx)
+                   {
+                       ctx.set<std::string>(1, "Albedo Filled");
+                       ctx.set<std::string>(2, "Normal Filled");
+                       ctx.set<std::string>(3, "Depth Filled");
+                       std::cout << "G-buffer produced";
+                   }});
     graph.addNode({.name = "LightingPass",
                    .produces = {5},
-                   .consumes = {1, 2, 3, 4}});
+                   .consumes = {1, 2, 3, 4},
+                   .execute = [&](ResourceContext &ctx)
+                   {
+                       auto &albedo = ctx.get<std::string>(1);
+                       auto &normal = ctx.get<std::string>(2);
+                       auto &depth = ctx.get<std::string>(3);
+
+                       std::cout << "  Lighting: consumed albedo " << albedo << "\n";
+                       std::cout << "  Lighting: consumed normal " << normal << "\n";
+                       std::cout << "  Lighting: consumed depth " << depth << "\n";
+                   }});
     graph.addNode({.name = "ShadowPass",
                    .produces = {4},
-                   .consumes = {}});
+                   .consumes = {},
+                   .execute = [&](ResourceContext &ctx) {}});
     graph.addNode({.name = "PostProcess",
                    .produces = {6},
-                   .consumes = {5}});
+                   .consumes = {5},
+                   .execute = [&](ResourceContext &ctx) {}});
     graph.addNode({.name = "SSAO",
                    .produces = {7},
-                   .consumes = {6, 3}});
+                   .consumes = {6, 3},
+                   .execute = [&](ResourceContext &ctx) {}});
 
-    graph.compile();
+    auto pipeline = graph.compile();
 
     graph.printResourceFlow();
     graph.printLifetimes();
     // std::cout << "Peak memory: " << graph.peakMemoryBytes() << "\n";
 
     graph.printAliasingReport();
+
+    graph.execute(pipeline);
 };
 int main()
 {

@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <functional>
 #include <iomanip>
+#include <any>
+#include <variant>
 
 using ResourceID = uint32_t;
 
@@ -23,14 +25,51 @@ struct ResourceDesc
     bool transient;
 };
 
+struct ResourceContext
+{
+    std::unordered_map<ResourceID, std::any> data;
+
+    template <typename T>
+    T &get(ResourceID id)
+    {
+        return std::any_cast<T &>(data[id]);
+    }
+    template <typename T>
+    void set(ResourceID id, T value)
+    {
+        data[id] = std::move(value);
+    }
+};
 struct GraphNode
 {
     std::string name;
     std::vector<ResourceID> produces;
     std::vector<ResourceID> consumes;
-    std::function<void()> execute;
+    std::function<void(ResourceContext &)> execute;
 };
 
+struct Barrier
+{
+    ResourceID resourceId;
+    std::string fromState;
+    std::string toState;
+};
+
+struct CompiledPipeline
+{
+    using Step = std::variant<int, Barrier>;
+
+    std::vector<Step> steps;
+};
+
+template <class... Ts>
+struct overloaded : Ts...
+{
+    using Ts::operator()...;
+};
+
+template <class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
 struct ResourceLifetime
 {
     ResourceID id;
@@ -45,6 +84,7 @@ struct MemoryBlock
     size_t sizeBytes;
     int lastUsedAtPass;
 };
+
 class ResourceGraph
 {
     std::vector<GraphNode> m_nodes;
@@ -62,7 +102,7 @@ public:
         m_nodes.emplace_back(std::move(node));
     }
 
-    void compile()
+    CompiledPipeline compile()
     {
         m_depGraph = Graph();
         std::unordered_map<ResourceID, int> producerOf;
@@ -102,6 +142,59 @@ public:
         auto cycles = m_depGraph.findCycles();
         if (!cycles.empty())
             throw std::runtime_error("Cycle in resource graph");
+
+        auto order = m_depGraph.topoSort();
+        CompiledPipeline pipeline;
+
+        std::unordered_map<ResourceID, std::string> resourceState;
+        for (auto &[rid, _] : m_resources)
+        {
+            resourceState[rid] = "Uninitialized";
+        };
+        for (auto &nodeIdx : order)
+        {
+            auto &node = m_nodes[nodeIdx];
+
+            for (auto &rid : node.consumes)
+            {
+                if (resourceState[rid] == "Produced")
+                {
+                    resourceState[rid] = "Consumed";
+                    pipeline.steps.push_back(Barrier{rid, "Produced", "Consumed"});
+                };
+            }
+
+            pipeline.steps.push_back((int)nodeIdx);
+
+            for (auto &rid : node.produces)
+            {
+                resourceState[rid] = "Produced";
+            }
+        }
+
+        return pipeline;
+    }
+    void execute(const CompiledPipeline &pipeline)
+    {
+        ResourceContext ctx;
+        for (auto &step : pipeline.steps)
+        {
+            std::visit(
+                overloaded{
+                    [&](int nodeIdx)
+                    {
+                        auto &node = m_nodes[nodeIdx];
+                        std::cout << "[Execute] " << node.name << "\n";
+                        node.execute(ctx);
+                    },
+                    [&](const Barrier &b)
+                    {
+                        std::cout << "[Barrier] " << m_resources[b.resourceId].name
+                                  << ": " << b.fromState
+                                  << " → " << b.toState << "\n";
+                    }},
+                step);
+        }
     }
 
     std::vector<uint32_t> executionOrder()
