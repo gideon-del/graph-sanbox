@@ -1,8 +1,11 @@
-#include "./includes/graph.hpp"
-#include "./includes/resources/resource-graph.hpp"
-#include "./includes/assets/asset-manager.hpp"
+#include "graph.hpp"
+#include "render-graph/resource-manager.hpp"
+#include "render-graph/render-graph.hpp"
+#include "resources/resource-graph.hpp"
+#include "assets/asset-manager.hpp"
 #include <iostream>
 #include <string>
+#include <optional>
 void test_basicCorrectness()
 {
     Graph g;
@@ -223,7 +226,7 @@ void test_assetHandles()
 {
     AssetManager manager;
 
-    TextureHandle texHandle = manager.textures.registerAsset(Texture{});
+    AssetTextureHandle texHandle = manager.textures.registerAsset(Texture{});
     MeshHandle meshHandle = manager.meshes.registerAsset(Mesh{});
     MaterialHandle materialHandle = manager.materials.registerAsset(Material{});
     std::cout << "Texture Handle id " << texHandle.id << "\n";
@@ -236,7 +239,7 @@ void test_assetHandles()
 void test_assetImport()
 {
     AssetManager manager;
-    TextureHandle wood = manager.importTexture("wood.jpg");
+    AssetTextureHandle wood = manager.importTexture("wood.jpg");
     std::cout << "Wood Id " << wood.id << "\n";
     auto woodTexture = manager.textures.get(wood);
     std::cout << (int)woodTexture->pixels[0] << " "
@@ -244,7 +247,7 @@ void test_assetImport()
               << (int)woodTexture->pixels[2] << " "
               << (int)woodTexture->pixels[3] << "\n";
 
-    TextureHandle missing = manager.importTexture("missing.jpg");
+    AssetTextureHandle missing = manager.importTexture("missing.jpg");
     std::cout << "Missing Id " << missing.id << "\n";
 }
 void test_assetGraph()
@@ -279,7 +282,7 @@ void test_assetAsyncLoader()
 {
     AssetManager manager;
 
-    TextureHandle handle = manager.requestTextureLoad("wood.jpg");
+    AssetTextureHandle handle = manager.requestTextureLoad("wood.jpg");
 
     int maxAttempts = 100;
     while (manager.textures.isPending(handle) && maxAttempts-- > 0)
@@ -406,6 +409,36 @@ void test_resourceGraphFanInFanOut()
 
     graph.execute(pipeline);
 };
+
+void test_renderGraph()
+{
+    ResourceManager manager;
+
+    manager.createTexture("X", GPUTextureDesc{}, ResourceLifetimeType::Transient);
+
+    RenderGraphBuilder graph{manager};
+
+    std::cout << "Started pass" << std::endl;
+    auto texture = graph.createTexture("X");
+
+    graph.addRenderPass("A")
+        .write(texture, ResourceState::ShaderWrite);
+
+    graph.addRenderPass("B")
+        .read(texture, ResourceState::ShaderRead);
+    graph.addRenderPass("T")
+        .read(texture, ResourceState::ShaderRead);
+
+    graph.addRenderPass("C")
+        .write(texture, ResourceState::ShaderWrite);
+
+    graph.addRenderPass("D")
+        .read(texture, ResourceState::ShaderRead);
+
+    graph.addRenderPass("E")
+        .write(texture, ResourceState::ShaderRead);
+    graph.printResourceFlow();
+}
 int main()
 {
     // test_basicCorrectness();
@@ -423,5 +456,8 @@ int main()
 
     // test_resourceGraphModel();
 
-    test_resourceGraphFanInFanOut();
+    test_renderGraph();
+
+    std::cout << "All Good" << std::endl;
+    return 0;
 }

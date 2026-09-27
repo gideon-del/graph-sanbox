@@ -16,7 +16,7 @@ public:
         std::vector<char> bytes(std::istreambuf_iterator<char>(file), {});
         return picosha2::hash256_hex_string(bytes);
     }
-    TextureHandle importTexture(
+    AssetTextureHandle importTexture(
         const std::filesystem::path &path)
     {
         PNGImporter importer;
@@ -28,7 +28,7 @@ public:
             return AssetHandle<Texture>{};
         }
 
-        TextureHandle handle = textures.registerAsset(std::move(*texture));
+        AssetTextureHandle handle = textures.registerAsset(std::move(*texture));
 
         AssetMetadata metadata;
         metadata.id = handle.id;
@@ -133,7 +133,6 @@ public:
     void printDependencies()
     {
         _depGraph.printStats();
-        std::cout << "Load order: ";
         _depGraph.printTopoOrder();
     }
 
@@ -182,9 +181,9 @@ public:
         if (meta.assetType == AssetType::Shader)
             reloadShader(id, meta);
     }
-    TextureHandle requestTextureLoad(const std::filesystem::path &path)
+    AssetTextureHandle requestTextureLoad(const std::filesystem::path &path)
     {
-        TextureHandle handle = textures.reserve();
+        AssetTextureHandle handle = textures.reserve();
 
         LoadRequest request;
         request.id = handle.id;
@@ -209,7 +208,7 @@ public:
             }
             if (result->type == AssetType::Texture)
             {
-                textures.promote(TextureHandle{result->id}, std::get<Texture>(result->asset));
+                textures.promote(AssetTextureHandle{result->id}, std::get<Texture>(result->asset));
 
                 AssetMetadata meta;
                 meta.sourceFile = result->path.string();
@@ -233,7 +232,7 @@ private:
     AsyncLoader m_loader;
     void reloadTexture(AssetID id, AssetMetadata &meta)
     {
-        TextureHandle handle = AssetHandle<Texture>{id};
+        AssetTextureHandle handle = AssetHandle<Texture>{id};
         PNGImporter importer;
         auto texture = importer.import(meta.sourceFile);
         if (!texture)

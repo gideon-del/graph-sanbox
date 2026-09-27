@@ -1,11 +1,18 @@
 #pragma once
 #include "../graph.hpp"
-#include <vector>
-#include <unordered_map>
+#include <algorithm>
+#include <any>
+#include <cstdint>
 #include <functional>
 #include <iomanip>
-#include <any>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <variant>
+#include <vector>
 
 using ResourceID = uint32_t;
 

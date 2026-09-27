@@ -35,13 +35,13 @@ struct AssetHandleHash
         return std::hash<AssetID>{}(id);
     }
 };
-using TextureHandle = AssetHandle<Texture>;
+using AssetTextureHandle = AssetHandle<Texture>;
 using ShaderHandle = AssetHandle<Shader>;
 using MeshHandle = AssetHandle<Mesh>;
 
 struct Material
 {
-    TextureHandle texture;
+    AssetTextureHandle texture;
     ShaderHandle shader;
 };
 using MaterialHandle = AssetHandle<Material>;
