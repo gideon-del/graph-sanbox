@@ -418,8 +418,7 @@ void test_renderGraph()
 
     RenderGraphBuilder graph{manager};
 
-    std::cout << "Started pass" << std::endl;
-    auto texture = graph.createTexture("X");
+      auto texture = graph.createTexture("X");
 
     graph.addRenderPass("A")
         .write(texture, ResourceState::ShaderWrite);
@@ -437,7 +436,9 @@ void test_renderGraph()
 
     graph.addRenderPass("E")
         .write(texture, ResourceState::ShaderRead);
-    graph.printResourceFlow();
+    // graph.printResourceFlow();
+    graph.compile();
+    graph.printPassOrder();
 }
 int main()
 {

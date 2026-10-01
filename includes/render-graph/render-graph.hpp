@@ -4,6 +4,7 @@
 #include <optional>
 #include <vector>
 #include <functional>
+#include <variant>
 
 struct ResourceVersion
 {
@@ -27,6 +28,7 @@ using LogicalBuffer = LogicalResource<BufferHandle>;
 
 using LogicalTextureHandle = Handle<LogicalTexture>;
 using LogicalBufferHandle = Handle<LogicalBuffer>;
+
 template <typename T>
 struct TemporalLogicalResource
 {
@@ -53,6 +55,23 @@ struct ResourceAccess
 
 using TextureAccess = ResourceAccess<LogicalTexture>;
 using BufferAccess = ResourceAccess<LogicalBuffer>;
+
+struct TextureBarrier
+{
+    TextureAccess access;
+};
+
+struct BufferBarrier
+{
+    BufferAccess access;
+};
+
+struct CompiledRenderGraph
+{
+
+    using Step = std::variant<int, TextureBarrier, BufferBarrier>;
+    std::vector<Step> steps;
+};
 
 class RenderGraphBuilder;
 
@@ -84,6 +103,7 @@ public:
     const std::vector<BufferAccess> &getBufferAccess() const { return m_buffers; }
     const RenderPassExecute &getExecute() { return m_execute; }
     const std::string &name() const { return m_name; }
+    const uint32_t index() const { return m_index; }
 
 private:
     uint32_t m_index;
@@ -111,8 +131,9 @@ public:
 
     RenderPass &addRenderPass(std::string name);
 
-    void printResourceFlow();
     void compile();
+    void printResourceFlow();
+    void printPassOrder();
 
 private:
     LogicalTextureHandle createTexture(const std::string &name, bool history);

@@ -152,3 +152,33 @@ This helps as well cause the flow for the dependency generation would be:
 The api user won't get the logical resource object, rather the Handle to that logical resource, this way it solves the second problem, the versions could be incremented( appended to the list) without the user worrying about it.
 
 The downside I can think of this is the render pass has no access to know what it reads or produces, in case I where to add a render pass context during execution. At the moment I can't see the usefulness for that yet has I plan to just pass the CommandBuffer and the ResourceManager during the execution of the RenderPass. Along with other required things.
+
+## Deferred delete for resources
+
+The main problem with deleting resources at once in a renderer is because first the resource might still be in use by the GPU while it's supposed to be deleted in the CPU.
+This is one of the reasons for deferred deletion of resources. We add those resources to a list. Then we scan through this list checking if it's safe to delete a resource before finally clearing that resource out.
+
+In my case, my main issue is making sure the GPU is done with a resource before deleting it. To solve this I have decided to keep track of which frame a resource was last accessed.
+With this I can safely check during the deletion process for resources that aren't suppose to be deleted in this frame.
+For example, Let's say we have 3 frames-in-flight and a resource last accessed in frame 2, That resource can not be deleted until the next frame 2 comes up
+In the meantime a replacement resource has already been created so that the upcoming frames use it.
+The issue with this is that, I can only delete a resource either before or after the render graph execution not during it, so that each render passes in the graph can have access to the latest resource.
+
+Some use cases for this that came to mind for this are
+
+1. Recreating new transient resource as a either as a change from lifetime plan (disabling/enabling a post process pass)
+2. Updating Resources
+
+## Resource Aliasing
+
+My goal for this is to reduce memory usage and also to enable transient resource to share storage. The questions I need to answer:
+
+1. What is the Lifetime of a transient physical resource?
+2. What is the Alias Plan for resources?
+3. How can that plan be diff to check for affected resources?
+
+### Transient physical resource
+
+The lifetime of a physical resource is basically the range of the start and end of a resource. The start being the render pass that created it and the end being the last render pass that made use of it.
+Getting the start is actually easy, that is just the producer of the first version.
+The end on the other hand is a bit tricky. Since I make use of resource versions the end has to be the final resource

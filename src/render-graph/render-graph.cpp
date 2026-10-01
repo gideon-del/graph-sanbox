@@ -319,3 +319,122 @@ void RenderGraphBuilder::printResourceFlow()
 
     std::cout << " ========Buffer Resource Flow====== " << std::endl;
 };
+
+void RenderGraphBuilder::compile()
+{
+    m_graph = Graph();
+
+    for (auto &pass : m_renderPasses)
+    {
+        m_graph.addNode(pass.index());
+    }
+
+    for (auto &logicalTexture : m_logicalTextures)
+    {
+        std::optional<int> previousVersionIdx = std::nullopt;
+
+        if (logicalTexture.history)
+        {
+            continue;
+        }
+        for (int i = 0; i < logicalTexture.versions.size(); i++)
+        {
+
+            auto &currentVersion = logicalTexture.versions[i];
+
+            bool hasProducer = currentVersion.producer.has_value();
+
+            if (!hasProducer)
+            {
+                throw std::runtime_error(std::format("{} does not have a producer", logicalTexture.name));
+            }
+
+            auto producerIdx = *currentVersion.producer;
+
+            for (auto &consumer : currentVersion.consumers)
+            {
+                if (consumer != producerIdx)
+                {
+                    m_graph.addEdge(producerIdx, consumer);
+                }
+            }
+
+            if (previousVersionIdx)
+            {
+                auto &previousVersion = logicalTexture.versions[*previousVersionIdx];
+                m_graph.addEdge(*previousVersion.producer, producerIdx);
+
+                for (auto &consumerIdx : previousVersion.consumers)
+                {
+                    if (consumerIdx != producerIdx)
+                    {
+                        m_graph.addEdge(consumerIdx, producerIdx);
+                    }
+                }
+            }
+
+            previousVersionIdx = i;
+        }
+    }
+
+    for (auto &logicalBuffer : m_logicalBuffers)
+    {
+        std::optional<int> previousVersionIdx = std::nullopt;
+
+        if (logicalBuffer.history)
+        {
+            continue;
+        }
+        for (int i = 0; i < logicalBuffer.versions.size(); i++)
+        {
+
+            auto &currentVersion = logicalBuffer.versions[i];
+
+            bool hasProducer = currentVersion.producer.has_value();
+
+            if (!hasProducer)
+            {
+                throw std::runtime_error(std::format("{} does not have a producer", logicalBuffer.name));
+            }
+
+            auto producerIdx = *currentVersion.producer;
+
+            for (auto &consumer : currentVersion.consumers)
+            {
+                if (consumer != producerIdx)
+                {
+                    m_graph.addEdge(producerIdx, consumer);
+                }
+            }
+            if (previousVersionIdx)
+            {
+                auto &previousVersion = logicalBuffer.versions[*previousVersionIdx];
+                m_graph.addEdge(*previousVersion.producer, producerIdx);
+
+                for (auto &consumerIdx : previousVersion.consumers)
+                {
+                    if (consumerIdx != producerIdx)
+                    {
+                        m_graph.addEdge(consumerIdx, producerIdx);
+                    }
+                }
+            }
+
+            previousVersionIdx = i;
+        }
+    }
+
+    m_executionOrder = m_graph.topoSort();
+}
+
+void RenderGraphBuilder::printPassOrder()
+{
+    std::cout << "Render Pass Execution Order" << std::endl;
+    std::stringstream ss;
+    for (auto &passIdx : m_executionOrder)
+    {
+        ss << " --> " << m_renderPasses[passIdx].name();
+    }
+
+    std::cout << ss.str() << std::endl;
+}
