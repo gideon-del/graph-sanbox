@@ -181,4 +181,78 @@ My goal for this is to reduce memory usage and also to enable transient resource
 
 The lifetime of a physical resource is basically the range of the start and end of a resource. The start being the render pass that created it and the end being the last render pass that made use of it.
 Getting the start is actually easy, that is just the producer of the first version.
-The end on the other hand is a bit tricky. Since I make use of resource versions the end has to be the final resource
+The end on the other hand is a bit tricky. Since I make use of resource versions the end has to be the final resource usage and that is where the resource lifetime ends.
+So i just need to check the producer and the consumers. (P.S I'm not using the render pass push order but rather the topological order to get the lifetime).
+
+One issue though is Temporal resources. I've decided to pause on temporal resources memory aliasing, cause these type of resource lifetime in not frame dependent, it can climb into the next frame.
+I'm sure there's a way but for now I'll pause on it.
+
+### Aliasing Plan
+
+Now from the previous render graph, I've come to know that Resource Lifetime and Aliasing Plan are two different things. The Resource lifetime in itself just give us information about the start and end of the resource. The aliasing plan on the other hand answers the following:
+
+1. What resources can be aliased?
+2. What resource can share the same storage based on their lifetime?
+3. Are the resources compatible for sharing aliasing space?
+
+For example, X and Y are transient resource but X occupies a different heap (device local) and Y expects another heap (Host visible). In this scenario, X and Y can not be aliased as their memory requirement are incompatible. Now with Vulkan it's easy to get the memory requirement for resources by creating the resource, getting it's actual memory requirement (size, heap index and so on), and deleting the resource. In metal there's no way to get the heap type index, so I've decided on a custom workaround. Based on the storage mode of the texture I can create my own index for it(I'll see how this works in practice).
+
+So those are the requirement I've set for the aliasing plan.
+Now the aliasing plan it self needs to be something that can be diffed, meaning if there's a change in a resource lifetime, it's heap and other resource must be re-aliased (don't know if this is a real word 😂).
+Here are some ideas:
+
+1. The plan diffing it self needs to be immutable, meaning resources can not be modified while the diffing is in progress. So making use of a command buffer is needed for this.
+2. Each alias plan needs to be checked separately, reason being not all resource share the same heap, so each alias plan has their own heap and also their own resources.
+3. Each alias plan has a certain order to the resources, they're arranged in the order in which their lifetime ends. For example, X ends in execution 3 and Y starts in execution 4. In this case X comes before Y. I can take advantage of this in the diffing. If there's a change in order to the previous alias plan then it's time for some changes.
+4. There's also an instance of a new resource being added to an alias plan as a result of some change (e.g one or more pass is disabled), It's kind of easy to solve since comparing the resource order is bound to return false. But also since if the resource list length is different will show there's a new resource added to the plan.
+   (Future Gideon here, this is wrong. Reason being that when a plan is made it already ensures that the resources in it don't have overlapping timeline and have the same memory requirement. So a new resource being added is not the issue, it's as simple as creating the new resource in that heap, the issue is when a resource is removed from and added somewhere else. There needs to be a synchronization between the delete commands and the add commands).
+5. Now the next thing is making sure the heap memory requirements are same if not it can be flagged as diffed.
+
+### Aliasing Commands
+
+Now for the aliasing command, I've decided to focus on these:
+
+1. Create Resource: this requires the resource handle and heap id
+2. Delete Resource: This just requires the handle.
+3. Move Resource: This is special cause it requires a resource to move from 1 heap to another, which in it self is a delete and create resource command.
+4. Create Heap: This just involves creating a new heap and need the memory requirement for it.
+5. Delete Heap: Now this is a special case. Deleting a heap also means deleting the resources tied to that heap. So the only instance a heap is to be deleted is when there are no resource being used by that heap.
+
+Now with all these said I've come to know that there's a specific order in which these commands are to be applied. For example I can't just create a resource and then execute a delete command for that resource. Same thing I can create a resource whose heap has not even be created. And i also can't delete a heap whose resources haven't been cleared out first.
+
+My plan at the moment involves ordering these commands by their type:
+
+1. Create Heap
+2. Delete Resource
+3. Create Resource
+4. Destroy Heap
+
+Something I also realize is that there's a dependency between each of these commands.
+
+1. Create Resource depends on the Destroy Resource (if it's there) and Create Heap (if it's there).
+2. Destroy Heap depends on the Destroy Resource Command for all of it's command.
+
+There will be different rules but these is basically the idea behind the dependency generation for these commands.
+
+### Alias Plan structure
+
+The plan would be made up of several alias group. This alias group will contain the list of resource id that share the heap and also the memory requirement for that heap.
+
+### Test Cases
+
+I've written the sandbox to a stage in which it's ready to move on to the renderer but first i need some test cases.
+I'm terrible at coming up with test cases but there's a first time for everything.
+So my plan is to come up with the test cases based on the rules I've set and a workflow that my current renderer already has.
+
+## RenderGraphBuilder Test case
+
+1. Two pass can not produce same version
+2. It should up hold RAW and WAW cases without throwing a cycle error.
+3. It should also handle WAR but this would be for per version. eg. V1 write should be dependent on V0 reads
+
+## Resource Manager
+
+1. Resource manager build should only build resources that are not Transient and single
+2. Resource Lifetime: A resource that has been resized to a lower size of it's heap should not leave that heap
+3. There should be no diff produced for in a frame where no resource lifetime or size has changed
+4. Heaps should not changed randomly (with size or so).

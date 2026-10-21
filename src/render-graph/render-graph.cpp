@@ -127,7 +127,7 @@ RenderPass::RenderPass(uint32_t index, std::string name, RenderGraphBuilder &ren
 {
 }
 
-RenderPass &RenderPass::read(const LogicalTextureHandle &handle, const ResourceState &state)
+RenderPass &RenderPass::read(const LogicalTextureHandle &handle, const ResourceState &state, bool history)
 {
     auto logicalTexture = m_renderGraph.getTexture(handle);
 
@@ -145,12 +145,12 @@ RenderPass &RenderPass::read(const LogicalTextureHandle &handle, const ResourceS
 
     currentVersion.consumers.push_back(m_index);
 
-    m_textures.push_back({.logicalResource = handle,
-                          .state = state});
+    m_textures.push_back({logicalTexture->physicalHandle,
+                          state, history});
     return *this;
 }
 
-RenderPass &RenderPass::read(const LogicalBufferHandle &handle, const ResourceState &state)
+RenderPass &RenderPass::read(const LogicalBufferHandle &handle, const ResourceState &state, bool history)
 {
     auto logicalBuffer = m_renderGraph.getBuffer(handle);
 
@@ -168,8 +168,9 @@ RenderPass &RenderPass::read(const LogicalBufferHandle &handle, const ResourceSt
 
     currentVersion.consumers.push_back(m_index);
 
-    m_buffers.push_back({.logicalResource = handle,
-                         .state = state});
+    m_buffers.push_back({.resource = logicalBuffer->physicalHandle,
+                         .state = state,
+                         .history = history});
     return *this;
 }
 
@@ -179,7 +180,7 @@ RenderPass &RenderPass::read(const TemporalLogicalTexture &temporal, const Resou
 }
 RenderPass &RenderPass::readHistory(const TemporalLogicalTexture &temporal, const ResourceState &state)
 {
-    return read(temporal.previous, state);
+    return read(temporal.previous, state, true);
 }
 RenderPass &RenderPass::read(const TemporalLogicalBuffer &temporal, const ResourceState &state)
 {
@@ -187,7 +188,7 @@ RenderPass &RenderPass::read(const TemporalLogicalBuffer &temporal, const Resour
 }
 RenderPass &RenderPass::readHistory(const TemporalLogicalBuffer &temporal, const ResourceState &state)
 {
-    return read(temporal.previous, state);
+    return read(temporal.previous, state, true);
 }
 RenderPass &RenderPass::setExecuteFn(RenderPassExecute execute)
 {
@@ -219,7 +220,7 @@ RenderPass &RenderPass::write(const LogicalTextureHandle &handle, const Resource
 
     current.producer = m_index;
 
-    m_textures.push_back({.logicalResource = handle,
+    m_textures.push_back({.resource = logicalTexture->physicalHandle,
                           .state = state});
 
     return *this;
@@ -247,7 +248,7 @@ RenderPass &RenderPass::write(const LogicalBufferHandle &handle, const ResourceS
 
     current.producer = m_index;
 
-    m_buffers.push_back({.logicalResource = handle,
+    m_buffers.push_back({.resource = logicalBuffer->physicalHandle,
                          .state = state});
 
     return *this;
@@ -320,7 +321,7 @@ void RenderGraphBuilder::printResourceFlow()
     std::cout << " ========Buffer Resource Flow====== " << std::endl;
 };
 
-void RenderGraphBuilder::compile()
+const CompiledRenderGraph RenderGraphBuilder::compile()
 {
     m_graph = Graph();
 
@@ -425,7 +426,32 @@ void RenderGraphBuilder::compile()
     }
 
     m_executionOrder = m_graph.topoSort();
+    m_lifetime = calculateLifetimes();
+    CompiledRenderGraph compiledGraph;
+
+    for (auto &passIdx : m_executionOrder)
+    {
+        compiledGraph.steps.push_back(buildRenderPassStep(passIdx));
+    }
+
+    return compiledGraph;
 }
+
+const CompiledRenderGraph::Step RenderGraphBuilder::buildRenderPassStep(int passIdx)
+{
+
+    if (passIdx >= (int)m_renderPasses.size())
+        throw std::runtime_error(std::format("No Render Pass with index: {}", passIdx));
+
+    CompiledRenderGraph::Step renderPassStep;
+    auto &renderPass = m_renderPasses[passIdx];
+
+    renderPassStep.passIdx = passIdx;
+    renderPassStep.textureBarriers = renderPass.getTextureAccess();
+    renderPassStep.bufferBarriers = renderPass.getBufferAccess();
+
+    return renderPassStep;
+};
 
 void RenderGraphBuilder::printPassOrder()
 {
@@ -437,4 +463,84 @@ void RenderGraphBuilder::printPassOrder()
     }
 
     std::cout << ss.str() << std::endl;
+}
+
+const PhysicalTextureLifetime RenderGraphBuilder::calculateLifetimes() const
+{
+
+    PhysicalTextureLifetime lifetimes;
+    std::unordered_map<uint32_t, uint32_t> passIdxToOrder;
+
+    for (uint32_t i = 0; i < (uint32_t)m_executionOrder.size(); i++)
+    {
+        auto &passIdx = m_executionOrder[i];
+        passIdxToOrder[passIdx] = i;
+        std::cout << "Pass idx " << passIdx << " Order " << i << std::endl;
+    }
+
+    for (auto &logicalTexture : m_logicalTextures)
+    {
+        if (logicalTexture.history)
+            continue;
+
+        auto &firstVersion = logicalTexture.versions[0];
+        if (!firstVersion.producer)
+            continue;
+
+        auto &lifetime = lifetimes[logicalTexture.physicalHandle];
+        lifetime.name = logicalTexture.name;
+
+        lifetime.createdAt = passIdxToOrder[*firstVersion.producer];
+        lifetime.lastUse = passIdxToOrder[*firstVersion.producer];
+
+        for (auto &version : logicalTexture.versions)
+        {
+
+            lifetime.lastUse = std::max(lifetime.lastUse, (int)passIdxToOrder[*version.producer]);
+
+            for (auto &consumer : version.consumers)
+            {
+                lifetime.lastUse = std::max(lifetime.lastUse, (int)passIdxToOrder[consumer]);
+            }
+        }
+    }
+
+    return lifetimes;
+};
+
+void RenderGraphBuilder::printResourceLifetime()
+{
+    auto lifetimes = calculateLifetimes();
+
+    std::cout << "Resource lifetime " << std::endl;
+    std::stringstream ss;
+
+    for (auto &[handle, lifetime] : lifetimes)
+    {
+        ss << lifetime.name;
+        ss << " Created At   " << lifetime.createdAt;
+        ss << " Last used at " << lifetime.lastUse << " \n";
+    }
+
+    std::cout << ss.str() << std::endl;
+}
+
+uint32_t RenderGraphBuilder::orderOf(const std::string &passName) const
+{
+
+    auto invalidPassIdx = std::numeric_limits<uint32_t>().max();
+    if (!m_nameToPassIndex.contains(passName))
+        return invalidPassIdx;
+
+    auto passIdx = m_nameToPassIndex.at(passName);
+
+    for (uint32_t i = 0; i < m_executionOrder.size(); i++)
+    {
+        if (m_executionOrder[i] == passIdx)
+        {
+            return i;
+        }
+    }
+
+    return invalidPassIdx;
 }

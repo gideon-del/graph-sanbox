@@ -19,12 +19,16 @@ public:
         }
     };
 
+    void clear()
+    {
+        m_slots.clear();
+        m_count = 0;
+    }
+
     T *get(uint32_t frameIdx = 0)
     {
-        if (m_count == 0)
-        {
+        if (m_slots.empty() || m_count == 0)
             return nullptr;
-        }
 
         auto idx = frameIdx % m_count;
         return &m_slots[idx];

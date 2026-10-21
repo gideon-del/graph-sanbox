@@ -6,10 +6,38 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <variant>
 #include "ring-buffer.hpp"
 #include "resource-types.hpp"
 constexpr uint32_t g_MAX_FRAME_COUNT = 2;
 
+struct CreateHeapCommand
+{
+    HeapId id;
+    HeapMemoryRequirement requirement;
+};
+struct CreateAliasTextureCommand
+{
+    HeapId id;
+    TextureHandle texture;
+    Extent2D extent;
+};
+struct DeleteAliasTextureCommand
+{
+
+    TextureHandle texture;
+};
+struct DeleteHeapCommand
+{
+
+    HeapId id;
+};
+
+using AliasCommand = std::variant<
+    CreateHeapCommand,
+    CreateAliasTextureCommand,
+    DeleteAliasTextureCommand,
+    DeleteHeapCommand>;
 class ResourceManager
 {
     template <typename T, typename Desc>
@@ -30,6 +58,12 @@ class ResourceManager
     // Pending for build
     std::vector<TextureHandle> m_pendingTextures;
     std::vector<BufferHandle> m_pendingBuffers;
+
+    // screen relative resources
+
+    std::vector<TextureHandle> m_screenRelativeTextures;
+    std::vector<BufferHandle> m_screenRelativeBuffers;
+
     std::unordered_map<std::string, TextureHandle> m_nameToTexture;
     std::unordered_map<std::string, BufferHandle> m_nameToBuffer;
     uint32_t m_currentFrameIdx = 0;
@@ -157,16 +191,16 @@ public:
 
             auto &resource = m_textures[handle.id];
 
-            if (resource.lifetime == ResourceLifetimeType::Transient)
+            if (resource.lifetime == ResourceLifetimeType::Transient && resource.instanceType == ResourceInstanceType::Single)
             {
                 continue;
-                // Transient will come later
             }
 
             resource.resources.create(resource.instanceCount,
-                                      [](uint32_t frameIdx)
+                                      [&](uint32_t frameIdx)
                                       {
-                                          return GPUTexture{};
+                                          return GPUTexture{.extent = {resource.descriptor.size.calculateTextureWidth(frameWidth),
+                                                                       resource.descriptor.size.calculateTextureHeight(frameHeight)}};
                                       });
         }
 
@@ -194,8 +228,30 @@ public:
                                       });
         }
 
-        m_pendingTextures.clear();
+        m_pendingBuffers.clear();
     }
+
+    const std::vector<AliasCommand> buildTransientTexture(uint32_t frameWidth, uint32_t frameHeight, const PhysicalTextureLifetime &lifetimes);
+    void advanceFrame()
+    {
+        m_currentFrameIdx++;
+
+        if (!m_historyValid)
+        {
+            m_historyValid = true;
+        }
+    }
+
+    void resize(uint32_t width, uint32_t height);
+    bool isHistoryValid() const { return m_historyValid; }
+
+    const AliasPlan &aliasPlan() const { return m_currentAliasPlan; }
+
+private:
+    PhysicalTextureLifetime m_lastLifetime;
+    AliasPlan m_currentAliasPlan;
+    std::unordered_map<HeapId, HeapMemoryRequirement> m_activeHeaps;
+    bool m_historyValid = false;
 
 private:
     TextureHandle createTexture(std::string name, GPUTextureDesc desc, ResourceLifetimeType lifetime, ResourceInstanceType instanceType, uint32_t instanceCount)
@@ -219,6 +275,11 @@ private:
         m_nameToTexture[name] = handle;
 
         m_pendingTextures.push_back(handle);
+
+        if (desc.size.type == ResourceSize::Type::ScreenRelative)
+        {
+            m_screenRelativeTextures.push_back(handle);
+        }
         return handle;
     };
     BufferHandle createBuffer(std::string name, GPUBufferDesc desc, ResourceLifetimeType lifetime, ResourceInstanceType instanceType, uint32_t instanceCount)
@@ -241,7 +302,21 @@ private:
 
         m_nameToBuffer[name] = handle;
 
+        if (desc.size.type != ResourceSize::Type::Absolute)
+        {
+            m_screenRelativeBuffers.push_back(handle);
+        }
         m_pendingBuffers.push_back(handle);
         return handle;
     };
+
+    AliasPlan calculateAliasPlan(const PhysicalTextureLifetime &lifetimes, const uint32_t width, const uint32_t height);
+
+    std::vector<AliasCommand> diffAliasPlan(const AliasPlan &newPlan);
+
+    // Apply aliasCommands
+    void applyAlias(const CreateHeapCommand &command);
+    void applyAlias(const CreateAliasTextureCommand &command);
+    void applyAlias(const DeleteAliasTextureCommand &command);
+    void applyAlias(const DeleteHeapCommand &command);
 };

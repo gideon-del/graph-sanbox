@@ -412,34 +412,8 @@ void test_resourceGraphFanInFanOut()
 
 void test_renderGraph()
 {
-    ResourceManager manager;
-
-    manager.createTexture("X", GPUTextureDesc{}, ResourceLifetimeType::Transient);
-
-    RenderGraphBuilder graph{manager};
-
-      auto texture = graph.createTexture("X");
-
-    graph.addRenderPass("A")
-        .write(texture, ResourceState::ShaderWrite);
-
-    graph.addRenderPass("B")
-        .read(texture, ResourceState::ShaderRead);
-    graph.addRenderPass("T")
-        .read(texture, ResourceState::ShaderRead);
-
-    graph.addRenderPass("C")
-        .write(texture, ResourceState::ShaderWrite);
-
-    graph.addRenderPass("D")
-        .read(texture, ResourceState::ShaderRead);
-
-    graph.addRenderPass("E")
-        .write(texture, ResourceState::ShaderRead);
-    // graph.printResourceFlow();
-    graph.compile();
-    graph.printPassOrder();
 }
+
 int main()
 {
     // test_basicCorrectness();

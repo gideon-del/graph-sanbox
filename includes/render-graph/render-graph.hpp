@@ -5,73 +5,7 @@
 #include <vector>
 #include <functional>
 #include <variant>
-
-struct ResourceVersion
-{
-    std::optional<int> producer{
-        std::nullopt};
-    std::vector<int> consumers;
-};
-
-template <typename T>
-struct LogicalResource
-{
-
-    std::string name;
-    T physicalHandle;
-    std::vector<ResourceVersion> versions;
-    bool history = false;
-};
-
-using LogicalTexture = LogicalResource<TextureHandle>;
-using LogicalBuffer = LogicalResource<BufferHandle>;
-
-using LogicalTextureHandle = Handle<LogicalTexture>;
-using LogicalBufferHandle = Handle<LogicalBuffer>;
-
-template <typename T>
-struct TemporalLogicalResource
-{
-    T current;
-    T previous;
-};
-
-using TemporalLogicalTexture = TemporalLogicalResource<LogicalTextureHandle>;
-using TemporalLogicalBuffer = TemporalLogicalResource<LogicalBufferHandle>;
-
-enum class ResourceState
-{
-    ShaderWrite,
-    ShaderRead,
-    Indirect
-};
-
-template <typename T>
-struct ResourceAccess
-{
-    Handle<T> logicalResource;
-    ResourceState state;
-};
-
-using TextureAccess = ResourceAccess<LogicalTexture>;
-using BufferAccess = ResourceAccess<LogicalBuffer>;
-
-struct TextureBarrier
-{
-    TextureAccess access;
-};
-
-struct BufferBarrier
-{
-    BufferAccess access;
-};
-
-struct CompiledRenderGraph
-{
-
-    using Step = std::variant<int, TextureBarrier, BufferBarrier>;
-    std::vector<Step> steps;
-};
+#include "resource-types.hpp"
 
 class RenderGraphBuilder;
 
@@ -82,11 +16,11 @@ class RenderPass
 public:
     RenderPass(uint32_t index, std::string name, RenderGraphBuilder &renderGraph);
 
-    RenderPass &read(const LogicalTextureHandle &handle, const ResourceState &state);
+    RenderPass &read(const LogicalTextureHandle &handle, const ResourceState &state, bool history = false);
     RenderPass &read(const TemporalLogicalTexture &temporal, const ResourceState &state);
 
     RenderPass &read(const TemporalLogicalBuffer &temporal, const ResourceState &state);
-    RenderPass &read(const LogicalBufferHandle &handle, const ResourceState &state);
+    RenderPass &read(const LogicalBufferHandle &handle, const ResourceState &state, bool history = false);
 
     RenderPass &write(const LogicalTextureHandle &handle, const ResourceState &state);
     RenderPass &write(const TemporalLogicalTexture &temporal, const ResourceState &state);
@@ -131,13 +65,23 @@ public:
 
     RenderPass &addRenderPass(std::string name);
 
-    void compile();
+    const CompiledRenderGraph compile();
     void printResourceFlow();
     void printPassOrder();
+    void printResourceLifetime();
+
+    const PhysicalTextureLifetime &lifetimes() const
+    {
+        return m_lifetime;
+    }
+    const std::vector<uint32_t> &executionOrder() const { return m_executionOrder; }
+    uint32_t orderOf(const std::string &passName) const;
 
 private:
     LogicalTextureHandle createTexture(const std::string &name, bool history);
     LogicalBufferHandle createBuffer(const std::string &name, bool history);
+    const PhysicalTextureLifetime calculateLifetimes() const;
+    const CompiledRenderGraph::Step buildRenderPassStep(int passIdx);
 
 private:
     Graph m_graph;
@@ -149,4 +93,5 @@ private:
     std::unordered_map<std::string, uint32_t> m_nameToPassIndex;
 
     std::vector<uint32_t> m_executionOrder;
+    PhysicalTextureLifetime m_lifetime;
 };

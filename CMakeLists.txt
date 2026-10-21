@@ -11,6 +11,8 @@ find_package(glm REQUIRED)
 
 add_executable(graph-sandbox 
 src/render-graph/render-graph.cpp
+src/render-graph/resource-types.cpp
+src/render-graph/resource-manager.cpp
 src/main.cpp
 vendor/stb_impl.cpp
 vendor/tinygltf_impl.cpp
