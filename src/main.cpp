@@ -6,6 +6,55 @@
 #include <iostream>
 #include <string>
 #include <optional>
+
+#define CHECK(cond)                                                                 \
+    do                                                                              \
+    {                                                                               \
+        if (!(cond))                                                                \
+        {                                                                           \
+            std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << "  " #cond "\n"; \
+            std::exit(1);                                                           \
+        }                                                                           \
+    } while (0)
+
+template <typename T>
+int count(const std::vector<AliasCommand> &commands)
+{
+    return std::count_if(commands.begin(), commands.end(),
+                         [&](const auto &c)
+                         {
+                             return std::holds_alternative<T>(c);
+                         });
+};
+
+bool phasesOrdered(const std::vector<AliasCommand> &commands)
+{
+    auto phase = [](const AliasCommand &c)
+    {
+        return std::visit([](const auto &x) -> int
+                          {
+        using T = std::decay_t<decltype(x)>;
+
+       if constexpr (std::is_same_v<T, DeleteAliasTextureCommand>)
+    return 0;
+else if constexpr (std::is_same_v<T, DeleteHeapCommand>)
+    return 1;
+else if constexpr (std::is_same_v<T, CreateHeapCommand>)
+    return 2;
+else
+    return 3; }, c);
+    };
+
+    for (int i = 1; i < commands.size(); i++)
+    {
+        if (phase(commands[i - 1]) > phase(commands[i]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 void test_basicCorrectness()
 {
     Graph g;
@@ -410,29 +459,449 @@ void test_resourceGraphFanInFanOut()
     graph.execute(pipeline);
 };
 
-void test_renderGraph()
+void setupTextures(ResourceManager &rm)
 {
+
+    rm.createTexture("X", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Y", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Z", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Bloom", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Shadow", GPUTextureDesc{.size = ResourceSize::textureAbsolute(2048, 2048)}, ResourceLifetimeType::Transient);
 }
 
+void test_diffCommand()
+{
+
+    uint32_t FRAME_WIDTH = 1600;
+    uint32_t FRAME_HEIGHT = 1200;
+
+    ResourceManager rm{};
+
+    setupTextures(rm);
+
+    RenderGraphBuilder graph{rm};
+
+    auto x = graph
+                 .createTexture("X");
+    auto y = graph
+                 .createTexture("Y");
+    auto z = graph
+                 .createTexture("Z");
+
+    graph.addRenderPass("A")
+        .write(x, ResourceState::ShaderWrite);
+    graph.addRenderPass("B")
+        .write(y, ResourceState::ShaderWrite)
+        .read(x, ResourceState::ShaderRead);
+    graph.addRenderPass("C")
+        .write(z, ResourceState::ShaderWrite)
+        .read(y, ResourceState::ShaderRead);
+
+    graph.compile();
+
+    auto &lifetimes = graph.lifetimes();
+
+    rm.buildResources({FRAME_WIDTH, FRAME_HEIGHT});
+
+    auto firstCommand = rm.buildTransientResources(FRAME_WIDTH, FRAME_HEIGHT, lifetimes);
+
+    RenderGraphBuilder secondGraph{rm};
+    auto sz = secondGraph
+                  .createTexture("Z");
+    auto sx = secondGraph
+                  .createTexture("X");
+    auto sy = secondGraph
+                  .createTexture("Y");
+
+    secondGraph.addRenderPass("A")
+        .write(sx, ResourceState::ShaderWrite);
+    secondGraph.addRenderPass("B")
+        .write(sy, ResourceState::ShaderWrite)
+        .read(sx, ResourceState::ShaderRead);
+    secondGraph.addRenderPass("C")
+        .write(sz, ResourceState::ShaderWrite)
+        .read(sy, ResourceState::ShaderRead);
+
+    secondGraph.compile();
+    auto secondLifetime = secondGraph.lifetimes();
+
+    auto secondCommand = rm.buildTransientResources(FRAME_WIDTH, FRAME_HEIGHT, secondLifetime);
+
+    CHECK(count<CreateHeapCommand>(firstCommand) == 2);
+    CHECK(count<CreateAliasTextureCommand>(firstCommand) == 3);
+    CHECK(count<DeleteAliasTextureCommand>(firstCommand) == 0);
+    CHECK(phasesOrdered(firstCommand));
+    CHECK(secondCommand.empty());
+
+    auto &plan = rm.aliasPlan();
+
+    CHECK(plan.textureToHeap.at(*rm.getTextureHandle("X")) ==
+          plan.textureToHeap.at(*rm.getTextureHandle("Z")));
+    CHECK(plan.textureToHeap.at(*rm.getTextureHandle("X")) !=
+          plan.textureToHeap.at(*rm.getTextureHandle("Y")));
+}
+void test_renderGraphReadsAndWrites()
+{
+
+    ResourceManager rm{};
+
+    setupTextures(rm);
+
+    RenderGraphBuilder graph{rm};
+
+    auto x = graph
+                 .createTexture("X");
+
+    graph.addRenderPass("A")
+        .write(x, ResourceState::ShaderWrite);
+    graph.addRenderPass("B")
+        .read(x, ResourceState::ShaderRead);
+    graph.addRenderPass("C")
+        .write(x, ResourceState::ShaderWrite);
+
+    graph.compile();
+
+    // RAW
+    CHECK(graph.orderOf("A") < graph.orderOf("B"));
+    // WAW
+    CHECK(graph.orderOf("A") < graph.orderOf("C"));
+    // WAR
+    CHECK(graph.orderOf("B") < graph.orderOf("C"));
+
+    // No cycle: every pass made it into the order
+    CHECK(graph.executionOrder().size() == 3);
+}
+
+void buildRenderPass(ResourceManager &rm, bool withBloom, RenderGraphBuilder &g)
+{
+
+    auto x = g
+                 .createTexture("X");
+    auto y = g
+                 .createTexture("Y");
+    auto z = g
+                 .createTexture("Z");
+    auto shadow = g
+                      .createTexture("Shadow");
+
+    g.addRenderPass("A")
+        .write(x, ResourceState::ShaderWrite)
+        .write(shadow, ResourceState::ShaderWrite);
+    g.addRenderPass("B")
+        .write(y, ResourceState::ShaderWrite)
+        .read(x, ResourceState::ShaderRead);
+    g.addRenderPass("C")
+        .write(z, ResourceState::ShaderWrite)
+        .read(y, ResourceState::ShaderRead);
+    auto bloom = g.createTexture("Bloom");
+    if (withBloom)
+        g.addRenderPass("Bloom").write(bloom, ResourceState::ShaderWrite).read(z, ResourceState::ShaderRead);
+};
+
+void test_renderPassToggle()
+{
+    ResourceManager rm{};
+
+    setupTextures(rm);
+
+    RenderGraphBuilder graph{rm};
+
+    buildRenderPass(rm, true, graph);
+    graph.compile();
+
+    auto &lifetimes = graph.lifetimes();
+
+    uint32_t FRAME_WIDTH = 1600;
+    uint32_t FRAME_HEIGHT = 1200;
+
+    auto firstCommand = rm.buildTransientResources(FRAME_WIDTH, FRAME_HEIGHT, lifetimes);
+
+    RenderGraphBuilder secondGraph{rm};
+
+    buildRenderPass(rm, false, secondGraph);
+    secondGraph.compile();
+
+    auto &secondLifetime = secondGraph.lifetimes();
+
+    auto secondCommand = rm.buildTransientResources(FRAME_WIDTH, FRAME_HEIGHT, secondLifetime);
+
+    CHECK(count<DeleteAliasTextureCommand>(secondCommand) == 1);
+}
+
+void test_resize()
+{
+    ResourceManager rm{};
+    setupTextures(rm);
+    RenderGraphBuilder graph{rm};
+    buildRenderPass(rm, true, graph);
+    graph.compile();
+    auto lifetimes = graph.lifetimes();
+
+    rm.buildTransientResources(1600, 1200, lifetimes);
+    auto shadow = *rm.getTextureHandle("Shadow");
+    auto y = *rm.getTextureHandle("Y");
+    auto shadowHeap = rm.aliasPlan().textureToHeap.at(shadow);
+    auto yHeap = rm.aliasPlan().textureToHeap.at(y);
+    size_t ySizeBefore = rm.aliasPlan().groups.at(yHeap).requirement.size;
+
+    // Shrink: heaps stay, textures recreated smaller
+    auto shrink = rm.buildTransientResources(800, 600, lifetimes);
+    CHECK(count<DeleteHeapCommand>(shrink) == 0);
+    CHECK(count<CreateHeapCommand>(shrink) == 0);
+    CHECK(rm.aliasPlan().textureExtents.at(y) == Extent2D(800, 600));
+
+    // Grow back to the original: heaps already fit, nothing recreated
+    auto regrow = rm.buildTransientResources(1600, 1200, lifetimes);
+    CHECK(count<CreateHeapCommand>(regrow) == 0);
+
+    // Grow beyond: screen-relative heaps grow, same slots
+    auto grow = rm.buildTransientResources(2200, 2200, lifetimes);
+    CHECK(count<CreateHeapCommand>(grow) > 0);
+    CHECK(phasesOrdered(grow));
+    CHECK(rm.aliasPlan().textureToHeap.at(y) == yHeap);
+
+    CHECK(rm.aliasPlan().groups.at(yHeap).requirement.size > ySizeBefore);
+
+    // Absolute-size shadow map: untouched by any resize
+    CHECK(rm.aliasPlan().textureToHeap.at(shadow) == shadowHeap);
+    CHECK(rm.aliasPlan().textureExtents.at(shadow) == Extent2D(2048, 2048));
+
+    // Growing within a shared heap that's already big enough: no heap work, Y just resized
+    auto absorbed = rm.buildTransientResources(2000, 2000, lifetimes);
+    CHECK(count<CreateHeapCommand>(absorbed) == 0);
+    CHECK(rm.aliasPlan().textureExtents.at(y) == Extent2D(2000, 2000));
+}
+
+void test_exclusion()
+{
+    ResourceManager rm{};
+    rm.createTexture("Transient", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Persistent", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Persistent);
+    rm.createTemporalTexture("History", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient, 2);
+    rm.createPerFrameTexture("PerFrame", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+
+    RenderGraphBuilder g{rm};
+    auto t = g.createTexture("Transient");
+    auto p = g.createTexture("Persistent");
+    auto h = g.createTemporalTexture("History");
+    auto f = g.createTexture("PerFrame");
+    g.addRenderPass("A").write(t, ResourceState::ShaderWrite).write(p, ResourceState::ShaderWrite).write(h, ResourceState::ShaderWrite).write(f, ResourceState::ShaderWrite);
+    g.compile();
+
+    rm.buildResources({1600, 1200});
+    rm.buildTransientResources(1600, 1200, g.lifetimes());
+    auto &plan = rm.aliasPlan();
+
+    // Only the transient single texture is aliased
+    CHECK(plan.textureToHeap.contains(*rm.getTextureHandle("Transient")));
+    CHECK(!plan.textureToHeap.contains(*rm.getTextureHandle("Persistent")));
+    CHECK(!plan.textureToHeap.contains(*rm.getTextureHandle("History")));
+    CHECK(!plan.textureToHeap.contains(*rm.getTextureHandle("PerFrame")));
+    CHECK(plan.groups.size() == 1);
+
+    // Excluded textures still exist, built by buildResources instead
+    CHECK(rm.get(*rm.getTextureHandle("Persistent")) != nullptr);
+    CHECK(rm.get(*rm.getTextureHandle("History")) != nullptr);
+    CHECK(rm.get(*rm.getTextureHandle("PerFrame")) != nullptr);
+}
+void test_historyValidity()
+{
+    ResourceManager rm{};
+    rm.createTexture("Transient", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Persistent", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Persistent);
+    rm.createTemporalTexture("History", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient, 2);
+    rm.createPerFrameTexture("PerFrame", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+
+    RenderGraphBuilder g{rm};
+    auto t = g.createTexture("Transient");
+    auto p = g.createTexture("Persistent");
+    auto h = g.createTemporalTexture("History");
+    auto f = g.createTexture("PerFrame");
+    g.addRenderPass("A").write(t, ResourceState::ShaderWrite).write(p, ResourceState::ShaderWrite).write(h, ResourceState::ShaderWrite).write(f, ResourceState::ShaderWrite);
+    g.compile();
+
+    rm.buildResources({1600, 1200});
+    rm.buildTransientResources(1600, 1200, g.lifetimes());
+
+    // History Invalid at start
+    CHECK(!rm.isHistoryValid());
+
+    rm.advanceFrame();
+
+    // History valid in next frame
+    CHECK(rm.isHistoryValid());
+
+    rm.resize(800, 600);
+    // History valid invalid at resize
+
+    CHECK(!rm.isHistoryValid());
+}
+void test_temporalRotation()
+{
+    ResourceManager rm{};
+    rm.createTexture("Transient", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+    rm.createTexture("Persistent", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Persistent);
+    auto historyHandle = rm.createTemporalTexture("History", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient, 2);
+    rm.createPerFrameTexture("PerFrame", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()}, ResourceLifetimeType::Transient);
+
+    RenderGraphBuilder g{rm};
+    auto t = g.createTexture("Transient");
+    auto p = g.createTexture("Persistent");
+    auto h = g.createTemporalTexture("History");
+    auto f = g.createTexture("PerFrame");
+    g.addRenderPass("A").write(t, ResourceState::ShaderWrite).write(p, ResourceState::ShaderWrite).write(h, ResourceState::ShaderWrite).write(f, ResourceState::ShaderWrite);
+    g.compile();
+
+    rm.buildResources({1600, 1200});
+    rm.buildTransientResources(1600, 1200, g.lifetimes());
+
+    auto firstFrameResource = rm.current(historyHandle);
+
+    rm.advanceFrame();
+
+    auto previousFrameResource = rm.previous(historyHandle);
+
+    CHECK(firstFrameResource == previousFrameResource);
+}
+
+void test_transitionWhole()
+{
+    ResourceManager rm{};
+    TextureState state(6, 1);
+    std::vector<TextureAccess> batch;
+    TextureHandle h{0};
+
+    // Whole texture from Undefined: one barrier, still uniform
+    rm.transition(state, {}, ResourceState::ShaderRead, batch, h, false);
+    CHECK(batch.size() == 1);
+    CHECK(batch[0].range.from == ResourceState::Undefined);
+    CHECK(batch[0].state == ResourceState::ShaderRead);
+    CHECK(batch[0].range.baseMip == 0 && batch[0].range.mipCount == 6);
+    CHECK(state.isUniform());
+
+    // Same state again: no barrier
+    batch.clear();
+    rm.transition(state, {}, ResourceState::ShaderRead, batch, h, false);
+    CHECK(batch.empty());
+}
+
+void test_transitionSingleMip()
+{
+    ResourceManager rm{};
+    TextureState state(6, 1);
+    std::vector<TextureAccess> batch;
+    TextureHandle h{0};
+
+    rm.transition(state, {}, ResourceState::ShaderRead, batch, h, false);
+    batch.clear();
+
+    // Mip 2 only: one barrier for exactly mip 2
+    rm.transition(state, {.baseMip = 2, .mipCount = 1}, ResourceState::ShaderWrite, batch, h, false);
+    CHECK(batch.size() == 1);
+    CHECK(batch[0].range.baseMip == 2 && batch[0].range.mipCount == 1);
+    CHECK(batch[0].range.from == ResourceState::ShaderRead);
+    CHECK(!state.isUniform());
+
+    // The other mips are untouched
+    for (uint32_t mip : {0u, 1u, 3u, 4u, 5u})
+        CHECK(state.get(state.subIndex(mip, 0)) == ResourceState::ShaderRead);
+    CHECK(state.get(state.subIndex(2, 0)) == ResourceState::ShaderWrite);
+}
+
+void test_transitionRunsAndCollapse()
+{
+    ResourceManager rm{};
+    TextureState state(6, 1);
+    std::vector<TextureAccess> batch;
+    TextureHandle h{0};
+
+    rm.transition(state, {}, ResourceState::ShaderRead, batch, h, false);
+    rm.transition(state, {.baseMip = 2, .mipCount = 1}, ResourceState::ShaderWrite, batch, h, false);
+    batch.clear();
+
+    // Whole texture to ShaderWrite: mips 0-1 and 3-5 need barriers, mip 2 is already there
+    rm.transition(state, {}, ResourceState::ShaderWrite, batch, h, false);
+    CHECK(batch.size() == 2);
+
+    CHECK(batch[0].range.baseMip == 0 && batch[0].range.mipCount == 2);
+    CHECK(batch[0].range.from == ResourceState::ShaderRead);
+    CHECK(batch[1].range.baseMip == 3 && batch[1].range.mipCount == 3);
+    CHECK(batch[1].range.from == ResourceState::ShaderRead);
+
+    // Everything matches again: collapsed back to uniform
+    CHECK(state.isUniform());
+    CHECK(state.get(0) == ResourceState::ShaderWrite);
+}
+
+void test_transitionMipChain()
+{
+    ResourceManager rm{};
+    TextureState state(6, 1);
+    std::vector<TextureAccess> batch;
+    TextureHandle h{0};
+
+    rm.transition(state, {}, ResourceState::ShaderWrite, batch, h, false); // mip 0 written first
+
+    // Downsample chain: read mip i, write mip i+1
+    for (uint32_t i = 0; i < 5; i++)
+    {
+        batch.clear();
+        rm.transition(state, {.baseMip = i, .mipCount = 1}, ResourceState::ShaderRead, batch, h, false);
+        rm.transition(state, {.baseMip = i + 1, .mipCount = 1}, ResourceState::ShaderWrite, batch, h, false);
+
+        // The read always needs a barrier; the write only once the mip was read before
+        CHECK(batch.size() >= 1);
+        for (auto &b : batch)
+            CHECK(b.range.mipCount == 1); // never more than one mip per barrier
+        CHECK(batch[0].range.baseMip == i);
+    }
+
+    // After the chain: mips 0-4 read, mip 5 written
+    for (uint32_t mip = 0; mip < 5; mip++)
+        CHECK(state.get(state.subIndex(mip, 0)) == ResourceState::ShaderRead);
+    CHECK(state.get(state.subIndex(5, 0)) == ResourceState::ShaderWrite);
+}
+void test_aliasedResetOnAdvance()
+{
+    ResourceManager rm{};
+    setupTextures(rm);
+    rm.createTexture("Persistent", GPUTextureDesc{.size = ResourceSize::textureScreenRelative()},
+                     ResourceLifetimeType::Persistent);
+
+    RenderGraphBuilder g{rm};
+    buildRenderPass(rm, true, g);
+    auto p = g.createTexture("Persistent");
+    g.addRenderPass("P").write(p, ResourceState::ShaderWrite);
+    g.compile();
+
+    rm.buildResources({1600, 1200});
+    rm.buildTransientResources(1600, 1200, g.lifetimes());
+
+    auto *x = rm.get(*rm.getTextureHandle("X"));
+    auto *persistent = rm.get(*rm.getTextureHandle("Persistent"));
+    x->state.updateAll(ResourceState::ShaderRead);
+    persistent->state.updateAll(ResourceState::ShaderRead);
+
+    rm.advanceFrame();
+
+    CHECK(x->state.get(0) == ResourceState::Undefined);           // aliased: reset
+    CHECK(persistent->state.get(0) == ResourceState::ShaderRead); // persistent: kept
+}
 int main()
 {
-    // test_basicCorrectness();
-    // test_graphTraversal();
-    // test_topoSort();
-    // test_cycleDetection();
 
-    // test_asciiVisualization();
-
-    // test_assetHandles();
-    // test_assetImport();
-    // test_assetGraph();
-    // test_assetIncrementalBuild();
-    // test_assetAsyncLoader();
-
-    // test_resourceGraphModel();
-
-    test_renderGraph();
-
+    test_diffCommand();
+    test_renderGraphReadsAndWrites();
+    test_renderPassToggle();
+    test_resize();
+    test_exclusion();
+    test_historyValidity();
+    test_temporalRotation();
+    test_transitionWhole();
+    test_transitionSingleMip();
+    test_transitionRunsAndCollapse();
+    test_transitionMipChain();
+    test_aliasedResetOnAdvance();
     std::cout << "All Good" << std::endl;
     return 0;
 }

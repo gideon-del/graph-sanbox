@@ -6,6 +6,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <algorithm>
 #include <variant>
 
 enum class ResourceState
@@ -16,18 +17,115 @@ enum class ResourceState
     Undefined
 };
 
+struct SubResourceRange
+{
+    uint32_t baseMip = 0, mipCount = UINT32_MAX,
+             baseLayer = 0, layerCount = UINT32_MAX;
+    ResourceState from = ResourceState::Undefined;
+
+    bool isAll() const
+    {
+        return baseMip == 0 && mipCount == UINT32_MAX && baseLayer == 0 && layerCount == UINT32_MAX;
+    }
+
+    SubResourceRange resolve(uint32_t texMips, uint32_t texLayers) const
+    {
+        SubResourceRange r = *this;
+
+        r.baseMip = std::min(r.baseMip, texMips);
+        r.baseLayer = std::min(r.baseLayer, texLayers);
+        if (r.mipCount == UINT32_MAX)
+            r.mipCount = std::max(texMips - baseMip, 1u);
+        if (r.layerCount == UINT32_MAX)
+            r.layerCount = std::max(texLayers - baseLayer, 1u);
+        return r;
+    }
+};
 struct TextureState
 {
 
-    TextureState(uint mipCount = 1, uint layers = 1) : perSub(mipCount * layers, ResourceState::Undefined)
+    TextureState(uint32_t mipCount = 1, uint32_t layers = 1) : perSub(mipCount * layers, ResourceState::Undefined), m_mipCount(mipCount), m_layers(layers)
     {
     }
-    bool uniform = true;
-    ResourceState all = ResourceState::Undefined;
-    std::vector<ResourceState> perSub;
 
+    uint32_t mipCount() const { return m_mipCount; }
+    uint32_t layerCount() const { return m_layers; }
     ResourceState get(uint32_t sub) const { return uniform ? all : perSub[sub]; }
+    uint32_t subIndex(uint32_t mip, uint32_t layer) const { return layer * m_mipCount + mip; }
+    void updateSub(uint32_t sub, ResourceState state)
+    {
+        if (sub >= (uint32_t)perSub.size())
+        {
+            return;
+        }
+
+        if (get(sub) == state)
+            return;
+        perSub[sub] = state;
+        checkUniform();
+
+        if (uniform)
+        {
+            all = state;
+        }
+    }
+
+    void updateRange(ResourceState state, uint32_t baseMip, uint32_t mipCount, uint32_t baseLayer, uint32_t layerCount)
+    {
+        uint32_t maxMip = baseMip + mipCount;
+        uint32_t maxLayer = baseLayer + layerCount;
+
+        assert(maxMip <= m_mipCount);
+        assert(maxLayer <= m_layers);
+
+        for (uint32_t mip = baseMip; mip < maxMip; mip++)
+        {
+            for (uint32_t layer = baseLayer; layer < maxLayer; layer++)
+            {
+                uint32_t sub = subIndex(mip, layer);
+
+                if (perSub[sub] == state)
+                    continue;
+                perSub[sub] = state;
+            }
+        }
+
+        checkUniform();
+    }
+    void updateAll(ResourceState state)
+    {
+
+        all = state;
+        uniform = true;
+        std::fill(perSub.begin(), perSub.end(), state);
+    }
+    const std::vector<ResourceState> &subState() const { return perSub; }
+    bool isUniform() const { return uniform; }
+
+private:
+    void checkUniform()
+    {
+        for (int i = 1; i < (int)perSub.size(); i++)
+        {
+
+            if (perSub[i - 1] != perSub[i])
+            {
+                uniform = false;
+                return;
+            }
+        }
+        uniform = true;
+        all = perSub[0];
+    }
+
+private:
+    uint32_t m_mipCount = 1, m_layers = 1;
+    ResourceState all = ResourceState::Undefined;
+
+    std::vector<ResourceState> perSub;
+    bool uniform = true;
 };
+
 enum class ResourceSizeType
 {
     Screen,
@@ -77,8 +175,7 @@ struct GPUTexture
 {
 
     Extent2D extent;
-    ResourceState state = ResourceState::Undefined;
-    // Make use of a list for mip x layer but this would be done in the rhi part
+    TextureState state;
 };
 
 enum class GPUImageFormat
@@ -212,6 +309,7 @@ struct ResourceAccess
 {
     Handle<T> resource;
     ResourceState state;
+    SubResourceRange range{};
     bool history = false;
 };
 

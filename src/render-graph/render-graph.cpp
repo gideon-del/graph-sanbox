@@ -127,7 +127,7 @@ RenderPass::RenderPass(uint32_t index, std::string name, RenderGraphBuilder &ren
 {
 }
 
-RenderPass &RenderPass::read(const LogicalTextureHandle &handle, const ResourceState &state, bool history)
+RenderPass &RenderPass::read(const LogicalTextureHandle &handle, const ResourceState &state, bool history, SubResourceRange range)
 {
     auto logicalTexture = m_renderGraph.getTexture(handle);
 
@@ -146,7 +146,7 @@ RenderPass &RenderPass::read(const LogicalTextureHandle &handle, const ResourceS
     currentVersion.consumers.push_back(m_index);
 
     m_textures.push_back({logicalTexture->physicalHandle,
-                          state, history});
+                          state, range, history});
     return *this;
 }
 
@@ -174,17 +174,17 @@ RenderPass &RenderPass::read(const LogicalBufferHandle &handle, const ResourceSt
     return *this;
 }
 
-RenderPass &RenderPass::read(const TemporalLogicalTexture &temporal, const ResourceState &state)
+RenderPass &RenderPass::read(const TemporalLogicalTexture &temporal, const ResourceState &state, SubResourceRange range)
 {
-    return read(temporal.current, state);
+    return read(temporal.current, state, false, range);
 }
-RenderPass &RenderPass::readHistory(const TemporalLogicalTexture &temporal, const ResourceState &state)
+RenderPass &RenderPass::readHistory(const TemporalLogicalTexture &temporal, const ResourceState &state, SubResourceRange range)
 {
-    return read(temporal.previous, state, true);
+    return read(temporal.previous, state, true, range);
 }
 RenderPass &RenderPass::read(const TemporalLogicalBuffer &temporal, const ResourceState &state)
 {
-    return read(temporal.current, state);
+    return read(temporal.current, state, false);
 }
 RenderPass &RenderPass::readHistory(const TemporalLogicalBuffer &temporal, const ResourceState &state)
 {
@@ -197,7 +197,7 @@ RenderPass &RenderPass::setExecuteFn(RenderPassExecute execute)
     return *this;
 }
 
-RenderPass &RenderPass::write(const LogicalTextureHandle &handle, const ResourceState &state)
+RenderPass &RenderPass::write(const LogicalTextureHandle &handle, const ResourceState &state, SubResourceRange range)
 {
     auto logicalTexture = m_renderGraph.getTexture(handle);
 
@@ -221,7 +221,8 @@ RenderPass &RenderPass::write(const LogicalTextureHandle &handle, const Resource
     current.producer = m_index;
 
     m_textures.push_back({.resource = logicalTexture->physicalHandle,
-                          .state = state});
+                          .state = state,
+                          .range = range});
 
     return *this;
 }
@@ -258,9 +259,9 @@ RenderPass &RenderPass::write(const TemporalLogicalBuffer &temporal, const Resou
 {
     return write(temporal.current, state);
 }
-RenderPass &RenderPass::write(const TemporalLogicalTexture &temporal, const ResourceState &state)
+RenderPass &RenderPass::write(const TemporalLogicalTexture &temporal, const ResourceState &state, SubResourceRange range)
 {
-    return write(temporal.current, state);
+    return write(temporal.current, state, range);
 }
 
 void RenderGraphBuilder::printResourceFlow()
@@ -347,6 +348,8 @@ const CompiledRenderGraph RenderGraphBuilder::compile()
 
             if (!hasProducer)
             {
+                if (currentVersion.consumers.empty())
+                    continue;
                 throw std::runtime_error(std::format("{} does not have a producer", logicalTexture.name));
             }
 
@@ -395,6 +398,8 @@ const CompiledRenderGraph RenderGraphBuilder::compile()
 
             if (!hasProducer)
             {
+                if (currentVersion.consumers.empty())
+                    continue;
                 throw std::runtime_error(std::format("{} does not have a producer", logicalBuffer.name));
             }
 
@@ -475,7 +480,6 @@ const PhysicalTextureLifetime RenderGraphBuilder::calculateLifetimes() const
     {
         auto &passIdx = m_executionOrder[i];
         passIdxToOrder[passIdx] = i;
-        std::cout << "Pass idx " << passIdx << " Order " << i << std::endl;
     }
 
     for (auto &logicalTexture : m_logicalTextures)

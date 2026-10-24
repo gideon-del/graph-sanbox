@@ -5,8 +5,15 @@
 #include <sstream>
 #include <string>
 #include <format>
+// bool heapRecreated(HeapId id, const std::vector<AliasCommand> &commands)
+// {
+//     return std::any_of(commands.begin(), commands.end(), [id](const AliasCommand &c)
+//                        {
+//         auto* create = std::get_if<CreateHeapCommand>(&c);
+//         return create && create->id == id; });
+// }
 
-const std::vector<AliasCommand> ResourceManager::buildTransientTexture(uint32_t frameWidth, uint32_t frameHeight, const PhysicalTextureLifetime &lifetimes)
+const std::vector<AliasCommand> ResourceManager::buildTransientResources(uint32_t frameWidth, uint32_t frameHeight, const PhysicalTextureLifetime &lifetimes)
 {
     auto newPlan = calculateAliasPlan(lifetimes, frameWidth, frameHeight);
     auto commands = diffAliasPlan(newPlan);
@@ -20,7 +27,8 @@ const std::vector<AliasCommand> ResourceManager::buildTransientTexture(uint32_t 
             },
             command);
     }
-
+    for (auto &[id, group] : newPlan.groups)
+        group.requirement = m_activeHeaps.at(id);
     m_currentAliasPlan = newPlan;
     m_lastLifetime = lifetimes;
 
@@ -185,13 +193,14 @@ std::vector<AliasCommand> ResourceManager::diffAliasPlan(const AliasPlan &newPla
                           {
         using T = std::decay_t<decltype(x)>;
 
-        if constexpr (std::is_same_v<T, DeleteAliasTextureCommand>) return 0;
-        if constexpr (std::is_same_v<T, DeleteHeapCommand>) 
-            return 1;
-        if constexpr (std::is_same_v<T, CreateHeapCommand>) 
-            return 2;
-
-        return 3; }, c);
+       if constexpr (std::is_same_v<T, DeleteAliasTextureCommand>)
+   { return 0;}
+else if constexpr (std::is_same_v<T, DeleteHeapCommand>)
+  {  return 1;}
+else if constexpr (std::is_same_v<T, CreateHeapCommand>)
+    {return 2;}
+else
+   { return 3;} }, c);
     };
 
     std::stable_sort(commands.begin(), commands.end(), [&](const auto &a, const auto &b)
@@ -226,7 +235,7 @@ void ResourceManager::applyAlias(const CreateAliasTextureCommand &command)
                               [&](uint32_t frameIdx)
                               {
                                   return GPUTexture{
-                                      command.extent};
+                                      command.extent, TextureState(resource.descriptor.mipCount, 1)};
                               });
     //   Also i might need to pass frame width and height  in the case of screen relative textures
 }
@@ -245,7 +254,7 @@ void ResourceManager::applyAlias(const DeleteHeapCommand &command)
     m_activeHeaps.erase(command.id);
 }
 
-void ResourceManager::resize(uint32_t width, uint32_t height)
+const std::vector<AliasCommand> ResourceManager::resize(uint32_t width, uint32_t height)
 {
     for (auto &h : m_screenRelativeTextures)
     {
@@ -266,7 +275,155 @@ void ResourceManager::resize(uint32_t width, uint32_t height)
                              { return GPUBuffer{}; });
     }
 
-    buildTransientTexture(width, height, m_lastLifetime);
+    auto commands = buildTransientResources(width, height, m_lastLifetime);
 
     m_historyValid = false;
+
+    return commands;
 }
+
+void ResourceManager::transition(TextureState &state, const SubResourceRange &range, ResourceState to, std::vector<TextureAccess> &batch, TextureHandle handle, bool history)
+{
+    bool wholeTexture = range.isAll();
+    bool uniform = state.isUniform();
+
+    auto resolvedRange = range.resolve(state.mipCount(), state.layerCount());
+
+    if (wholeTexture && uniform)
+    {
+        auto currentState = state.get(0);
+
+        if (currentState == to)
+            return;
+        resolvedRange.from = currentState;
+        batch.push_back({
+
+            .resource = handle, // In the renderer this will hold either the previous or current handle to the renderer based on the history
+            .state = to,
+            .range = resolvedRange,
+            .history = history
+
+        });
+
+        state.updateAll(to);
+
+        return;
+    }
+
+    for (uint32_t layer = resolvedRange.baseLayer; layer < resolvedRange.baseLayer + resolvedRange.layerCount; ++layer)
+    {
+
+        uint32_t runStart = resolvedRange.baseMip;
+        ResourceState runState = state.get(state.subIndex(runStart, layer));
+
+        auto flush = [&](uint32_t end)
+        {
+            if (runState != to)
+            {
+
+                SubResourceRange newRange{};
+                newRange.baseMip = runStart;
+                newRange.baseLayer = layer;
+                newRange.mipCount = end - runStart;
+                newRange.layerCount = 1;
+                newRange.from = runState;
+                batch.push_back({handle, to, newRange, history});
+            }
+        };
+
+        for (uint32_t mip = resolvedRange.baseMip; mip < resolvedRange.baseMip + resolvedRange.mipCount; mip++)
+        {
+            auto subState = state.get(state.subIndex(mip, layer));
+
+            if (subState != runState)
+            {
+                flush(mip);
+                runState = subState;
+                runStart = mip;
+            }
+        }
+
+        flush(resolvedRange.baseMip + resolvedRange.mipCount);
+    }
+    state.updateRange(to, resolvedRange.baseMip, resolvedRange.mipCount, resolvedRange.baseLayer, resolvedRange.layerCount);
+    // auto splitMipBarrier = [&]()
+    // {
+    //     uint32_t maxMip = resolvedRange.baseMip + resolvedRange.mipCount;
+    //     uint32_t maxLayer = resolvedRange.baseLayer + resolvedRange.layerCount;
+
+    //     assert(maxMip <= state.mipCount());
+    //     assert(maxLayer <= state.layerCount());
+    //     SubResourceRange currentResourceRange{};
+    //     currentResourceRange.baseMip = resolvedRange.baseMip;
+    //     currentResourceRange.baseLayer = resolvedRange.baseLayer;
+    //     currentResourceRange.mipCount = 1;
+    //     currentResourceRange.layerCount = 1;
+
+    //     ResourceState currentGroupState = state.get(currentResourceRange.baseMip * currentResourceRange.baseLayer);
+
+    //     for (uint32_t mip = resolvedRange.baseMip; mip < maxMip; mip++)
+    //     {
+    //         for (uint32_t layer = resolvedRange.baseLayer; layer < maxLayer; layer++)
+    //         {
+    //             auto currentSubState = state.get(state.subIndex(mip, layer));
+
+    //             if (currentSubState == currentGroupState)
+    //             {
+    //                 currentResourceRange.mipCount = std::max(mip - currentResourceRange.baseMip, 1u);
+    //                 currentResourceRange.layerCount = std::max(layer - currentResourceRange.baseLayer, 1u);
+    //                 continue;
+    //             };
+
+    //             if (currentGroupState != to)
+    //             {
+
+    //                 currentResourceRange.from = currentGroupState;
+    //                 batch.push_back({
+
+    //                     .resource = handle,
+    //                     .state = to,
+    //                     .range = currentResourceRange,
+    //                     .history = history
+
+    //                 });
+
+    //                 state.updateRange(
+    //                     to,
+    //                     currentResourceRange.baseMip,
+    //                     currentResourceRange.mipCount,
+    //                     currentResourceRange.baseLayer,
+    //                     currentResourceRange.layerCount);
+    //             }
+
+    //             currentResourceRange.baseMip = mip;
+    //             currentResourceRange.baseLayer = layer;
+    //             currentResourceRange.mipCount = 1;
+    //             currentResourceRange.layerCount = 1;
+
+    //             currentGroupState = currentSubState;
+    //         }
+    //     }
+
+    //     if (currentGroupState != to)
+    //     {
+    //         currentResourceRange.from = currentGroupState;
+    //         batch.push_back({
+
+    //             .resource = handle,
+    //             .state = to,
+    //             .range = currentResourceRange,
+    //             .history = history
+
+    //         });
+
+    //         state.updateRange(
+    //             to,
+    //             currentResourceRange.baseMip,
+    //             currentResourceRange.mipCount,
+    //             currentResourceRange.baseLayer,
+    //             currentResourceRange.layerCount);
+    //     }
+    // };
+
+    // splitMipBarrier();
+};

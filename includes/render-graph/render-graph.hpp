@@ -16,20 +16,26 @@ class RenderPass
 public:
     RenderPass(uint32_t index, std::string name, RenderGraphBuilder &renderGraph);
 
-    RenderPass &read(const LogicalTextureHandle &handle, const ResourceState &state, bool history = false);
-    RenderPass &read(const TemporalLogicalTexture &temporal, const ResourceState &state);
+    RenderPass &read(const LogicalTextureHandle &handle, const ResourceState &state, SubResourceRange range = SubResourceRange{})
+    {
+        return read(handle, state, false, range);
+    };
+    RenderPass &read(const TemporalLogicalTexture &temporal, const ResourceState &state, SubResourceRange range = SubResourceRange{});
 
     RenderPass &read(const TemporalLogicalBuffer &temporal, const ResourceState &state);
-    RenderPass &read(const LogicalBufferHandle &handle, const ResourceState &state, bool history = false);
+    RenderPass &read(const LogicalBufferHandle &handle, const ResourceState &state)
+    {
+        return read(handle, state, false);
+    };
 
-    RenderPass &write(const LogicalTextureHandle &handle, const ResourceState &state);
-    RenderPass &write(const TemporalLogicalTexture &temporal, const ResourceState &state);
+    RenderPass &write(const LogicalTextureHandle &handle, const ResourceState &state, SubResourceRange range = SubResourceRange{});
+    RenderPass &write(const TemporalLogicalTexture &temporal, const ResourceState &state, SubResourceRange range = SubResourceRange{});
 
     RenderPass &write(const TemporalLogicalBuffer &temporal, const ResourceState &state);
     RenderPass &write(const LogicalBufferHandle &handle, const ResourceState &state);
 
     RenderPass &readHistory(const TemporalLogicalBuffer &temporal, const ResourceState &state);
-    RenderPass &readHistory(const TemporalLogicalTexture &temporal, const ResourceState &state);
+    RenderPass &readHistory(const TemporalLogicalTexture &temporal, const ResourceState &state, SubResourceRange range = SubResourceRange{});
 
     RenderPass &setExecuteFn(RenderPassExecute execute);
 
@@ -38,6 +44,10 @@ public:
     const RenderPassExecute &getExecute() { return m_execute; }
     const std::string &name() const { return m_name; }
     const uint32_t index() const { return m_index; }
+
+private:
+    RenderPass &read(const LogicalTextureHandle &handle, const ResourceState &state, bool history, SubResourceRange range);
+    RenderPass &read(const LogicalBufferHandle &handle, const ResourceState &state, bool history);
 
 private:
     uint32_t m_index;

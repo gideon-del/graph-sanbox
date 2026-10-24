@@ -182,6 +182,40 @@ public:
         return resource.resources.get(m_currentFrameIdx > 0 ? m_currentFrameIdx - 1 : 0);
     };
 
+    void buildResources(Extent2D extent)
+    {
+        buildBuffers(extent.width, extent.height);
+        buildTextures(extent.width, extent.height);
+    }
+
+    const std::vector<AliasCommand> buildTransientResources(uint32_t frameWidth, uint32_t frameHeight, const PhysicalTextureLifetime &lifetimes);
+    void advanceFrame()
+    {
+        m_currentFrameIdx++;
+
+        if (!m_historyValid)
+        {
+            m_historyValid = true;
+        }
+
+        for (auto &[handle, heap] : m_currentAliasPlan.textureToHeap)
+            if (auto *tex = get(handle))
+                tex->state.updateAll(ResourceState::Undefined);
+    }
+
+    void transition(TextureState &state, const SubResourceRange &range, ResourceState to, std::vector<TextureAccess> &batch, TextureHandle handle, bool history);
+    const std::vector<AliasCommand> resize(uint32_t width, uint32_t height);
+    bool isHistoryValid() const { return m_historyValid; }
+
+    const AliasPlan &aliasPlan() const { return m_currentAliasPlan; }
+
+private:
+    PhysicalTextureLifetime m_lastLifetime;
+    AliasPlan m_currentAliasPlan;
+    std::unordered_map<HeapId, HeapMemoryRequirement> m_activeHeaps;
+    bool m_historyValid = false;
+
+private:
     void buildTextures(uint32_t frameWidth, uint32_t frameHeight)
     {
         for (auto &handle : m_pendingTextures)
@@ -200,7 +234,10 @@ public:
                                       [&](uint32_t frameIdx)
                                       {
                                           return GPUTexture{.extent = {resource.descriptor.size.calculateTextureWidth(frameWidth),
-                                                                       resource.descriptor.size.calculateTextureHeight(frameHeight)}};
+                                                                       resource.descriptor.size.calculateTextureHeight(frameHeight)}
+
+                                                            ,
+                                                            .state = TextureState(resource.descriptor.mipCount, 1)};
                                       });
         }
 
@@ -231,29 +268,6 @@ public:
         m_pendingBuffers.clear();
     }
 
-    const std::vector<AliasCommand> buildTransientTexture(uint32_t frameWidth, uint32_t frameHeight, const PhysicalTextureLifetime &lifetimes);
-    void advanceFrame()
-    {
-        m_currentFrameIdx++;
-
-        if (!m_historyValid)
-        {
-            m_historyValid = true;
-        }
-    }
-
-    void resize(uint32_t width, uint32_t height);
-    bool isHistoryValid() const { return m_historyValid; }
-
-    const AliasPlan &aliasPlan() const { return m_currentAliasPlan; }
-
-private:
-    PhysicalTextureLifetime m_lastLifetime;
-    AliasPlan m_currentAliasPlan;
-    std::unordered_map<HeapId, HeapMemoryRequirement> m_activeHeaps;
-    bool m_historyValid = false;
-
-private:
     TextureHandle createTexture(std::string name, GPUTextureDesc desc, ResourceLifetimeType lifetime, ResourceInstanceType instanceType, uint32_t instanceCount)
     {
         if (auto it = m_nameToTexture.find(name); it != m_nameToTexture.end())
